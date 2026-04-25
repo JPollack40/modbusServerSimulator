@@ -1,5 +1,5 @@
 """
-slave_dialog.py – Dialog for adding a slave ID to a server.
+slave_dialog.py – Dialog for adding a Modbus Server (slave ID) to a server.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from PySide6.QtCore import Qt
 
 class SlaveDialog(QDialog):
     """
-    Simple dialog to choose a Modbus slave ID (1-247).
+    Simple dialog to choose a Modbus Server ID (1-247).
 
     Usage
     -----
@@ -25,8 +25,8 @@ class SlaveDialog(QDialog):
     def __init__(self, parent=None, existing_ids: list[int] | None = None,
                  current_id: int | None = None):
         super().__init__(parent)
-        self.setWindowTitle("Add Slave Device")
-        self.setMinimumWidth(280)
+        self.setWindowTitle("Add Modbus Server")
+        self.setMinimumWidth(300)
 
         self._existing = set(existing_ids or [])
         self.slave_id: int = 1
@@ -34,7 +34,7 @@ class SlaveDialog(QDialog):
         layout = QVBoxLayout(self)
 
         info = QLabel(
-            "Enter the Modbus slave ID for the new device.\n"
+            "Enter the Modbus Server ID for the new device.\n"
             "Valid range: 1 – 247."
         )
         info.setWordWrap(True)
@@ -53,7 +53,7 @@ class SlaveDialog(QDialog):
                     self._spin.setValue(candidate)
                     break
 
-        form.addRow("Slave ID:", self._spin)
+        form.addRow("Modbus Server ID:", self._spin)
         layout.addLayout(form)
 
         buttons = QDialogButtonBox(
@@ -69,8 +69,8 @@ class SlaveDialog(QDialog):
         if sid in self._existing:
             from PySide6.QtWidgets import QMessageBox
             QMessageBox.warning(
-                self, "Duplicate Slave ID",
-                f"Slave ID {sid} already exists on this server.\n"
+                self, "Duplicate Modbus Server ID",
+                f"Modbus Server ID {sid} already exists on this TCP server.\n"
                 "Please choose a different ID."
             )
             return

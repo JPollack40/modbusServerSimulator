@@ -1,5 +1,5 @@
 """
-main_window.py – Modbus Server Simulator GUI (multi-server / multi-slave)
+main_window.py – PHS Modbus Server Simulator GUI (multi-server / multi-slave)
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from PySide6.QtWidgets import (
     QMessageBox, QMenu, QToolBar, QSizePolicy
 )
 from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QColor, QAction, QIcon, QFont
+from PySide6.QtGui import QColor, QAction, QFont
 
 from models.register_data import ModbusDataType, DataConverter, get_register_count
 from models.device_config import Project, ServerConfig, SlaveConfig, NUM_ROWS
@@ -29,9 +29,6 @@ logger = logging.getLogger(__name__)
 BOOL_TYPES = {"Coils", "Discrete Inputs"}
 REG_TYPES  = {"Holding Registers", "Input Registers"}
 ALL_DTYPES = [t.value for t in ModbusDataType]
-
-SLAVE_BG = QColor(220, 220, 220)
-NORM_BG  = QColor(255, 255, 255)
 
 # Tree item user-data roles
 ROLE_SERVER = Qt.UserRole
@@ -55,7 +52,7 @@ class MainWindow(QMainWindow):
 
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Modbus Server Simulator")
+        self.setWindowTitle("PHS Modbus Server Simulator")
         self.resize(1200, 720)
 
         # ── Project model ──────────────────────────────────────────────────
@@ -82,9 +79,21 @@ class MainWindow(QMainWindow):
         tb.addAction(act_load)
         tb.addSeparator()
 
-        add_srv_btn = QPushButton("＋ Add Server")
+        add_srv_btn = QPushButton("＋ Add TCP Server")
         add_srv_btn.clicked.connect(self._add_server)
         tb.addWidget(add_srv_btn)
+
+        tb.addSeparator()
+
+        self._start_all_btn = QPushButton("▶ Start All")
+        self._start_all_btn.setToolTip("Start all configured TCP servers")
+        self._start_all_btn.clicked.connect(self._start_all_servers)
+        tb.addWidget(self._start_all_btn)
+
+        self._stop_all_btn = QPushButton("■ Stop All")
+        self._stop_all_btn.setToolTip("Stop all running TCP servers")
+        self._stop_all_btn.clicked.connect(self._stop_all_servers)
+        tb.addWidget(self._stop_all_btn)
 
         # ── Central splitter ───────────────────────────────────────────────
         splitter = QSplitter(Qt.Horizontal)
@@ -105,8 +114,8 @@ class MainWindow(QMainWindow):
         self.tree.currentItemChanged.connect(self._on_tree_selection_changed)
         left_layout.addWidget(self.tree)
 
-        left_panel.setMinimumWidth(220)
-        left_panel.setMaximumWidth(340)
+        left_panel.setMinimumWidth(240)
+        left_panel.setMaximumWidth(360)
         splitter.addWidget(left_panel)
 
         # ── Right: register editor ─────────────────────────────────────────
@@ -115,14 +124,16 @@ class MainWindow(QMainWindow):
         right_layout.setContentsMargins(4, 4, 4, 4)
 
         # Context bar (shows which device is being edited)
-        self._context_label = QLabel("<i>Select a slave device in the tree to edit its registers.</i>")
+        self._context_label = QLabel(
+            "<i>Select a Modbus Server in the tree to edit its registers.</i>"
+        )
         self._context_label.setWordWrap(True)
         right_layout.addWidget(self._context_label)
 
-        # Server controls bar (shown when a slave is selected)
+        # Server controls bar
         ctrl_bar = QHBoxLayout()
 
-        self._start_btn = QPushButton("Start Server")
+        self._start_btn = QPushButton("Start TCP Server")
         self._start_btn.setCheckable(True)
         self._start_btn.setEnabled(False)
         self._start_btn.clicked.connect(self._toggle_server)
@@ -145,12 +156,12 @@ class MainWindow(QMainWindow):
         self._load_srv_btn.clicked.connect(self._load_server_config)
         ctrl_bar.addWidget(self._load_srv_btn)
 
-        self._save_slave_btn = QPushButton("Save Slave CSV…")
+        self._save_slave_btn = QPushButton("Save Modbus Server CSV…")
         self._save_slave_btn.setEnabled(False)
         self._save_slave_btn.clicked.connect(self._save_slave_csv)
         ctrl_bar.addWidget(self._save_slave_btn)
 
-        self._load_slave_btn = QPushButton("Load Slave CSV…")
+        self._load_slave_btn = QPushButton("Load Modbus Server CSV…")
         self._load_slave_btn.setEnabled(False)
         self._load_slave_btn.clicked.connect(self._load_slave_csv)
         ctrl_bar.addWidget(self._load_slave_btn)
@@ -161,15 +172,17 @@ class MainWindow(QMainWindow):
         grp_bar = QHBoxLayout()
         grp_bar.addWidget(QLabel("Register Group:"))
         self._group_combo = QComboBox()
-        self._group_combo.addItems(["Coils", "Discrete Inputs", "Holding Registers", "Input Registers"])
+        self._group_combo.addItems(
+            ["Coils", "Discrete Inputs", "Holding Registers", "Input Registers"]
+        )
         self._group_combo.setEnabled(False)
         self._group_combo.currentTextChanged.connect(self._switch_register_group)
         grp_bar.addWidget(self._group_combo)
         grp_bar.addStretch()
         right_layout.addLayout(grp_bar)
 
-        # Register table
-        self.table = QTableWidget(NUM_ROWS, 3)
+        # Register table — rows are populated lazily via setRowCount
+        self.table = QTableWidget(0, 3)
         self.table.setHorizontalHeaderLabels(["Address", "Data Type", "Value"])
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
@@ -180,7 +193,7 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
 
-        # Start with one default server + slave so the app is immediately usable
+        # Start with one default TCP server + Modbus Server so the app is immediately usable
         self._create_default_project()
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -188,11 +201,11 @@ class MainWindow(QMainWindow):
     # ══════════════════════════════════════════════════════════════════════════
 
     def _create_default_project(self):
-        srv = ServerConfig(name="Server 1", host="0.0.0.0", port=502)
+        srv = ServerConfig(name="TCP Server 1", host="0.0.0.0", port=502)
         srv.add_slave(1)
         self.project.add_server(srv)
         self._rebuild_tree()
-        # Select the first slave automatically
+        # Select the first Modbus Server automatically
         root = self.tree.topLevelItem(0)
         if root and root.childCount() > 0:
             self.tree.setCurrentItem(root.child(0))
@@ -227,7 +240,7 @@ class MainWindow(QMainWindow):
         return item
 
     def _make_slave_item(self, slave: SlaveConfig) -> QTreeWidgetItem:
-        item = QTreeWidgetItem([f"  ⚙  Slave {slave.slave_id}"])
+        item = QTreeWidgetItem([f"  ⚙  Modbus Server {slave.slave_id}"])
         item.setData(0, ROLE_SLAVE, slave)
         return item
 
@@ -264,25 +277,25 @@ class MainWindow(QMainWindow):
         srv   = current.data(0, ROLE_SERVER)
 
         if slave is not None:
-            # A slave node was selected — find its parent server
+            # A Modbus Server node was selected — find its parent TCP server
             parent = current.parent()
             if parent:
                 srv = parent.data(0, ROLE_SERVER)
             self._select_slave(srv, slave)
         elif srv is not None:
-            # A server node was selected — just update controls, no table
+            # A TCP server node was selected — just update controls, no table
             self._active_server = srv
             self._active_slave  = None
             self._update_controls()
             self._context_label.setText(
                 f"<b>{srv.name}</b>  {srv.host}:{srv.port} — "
-                f"select a slave to edit its registers."
+                f"select a Modbus Server to edit its registers."
             )
             self.table.setEnabled(False)
             self._group_combo.setEnabled(False)
 
     def _select_slave(self, srv: ServerConfig, slave: SlaveConfig):
-        """Save current table state, then switch to the new slave."""
+        """Save current table state, then switch to the new Modbus Server."""
         if self._active_slave is not None:
             self._save_current_table_to_model()
 
@@ -297,7 +310,7 @@ class MainWindow(QMainWindow):
         self._update_controls()
         self._context_label.setText(
             f"<b>{srv.name}</b>  {srv.host}:{srv.port}  →  "
-            f"<b>Slave {slave.slave_id}</b>"
+            f"<b>Modbus Server {slave.slave_id}</b>"
         )
         self.table.setEnabled(True)
         self._group_combo.setEnabled(True)
@@ -306,7 +319,7 @@ class MainWindow(QMainWindow):
     def _update_controls(self):
         """Sync toolbar buttons and zero-based checkbox with active server."""
         srv = self._active_server
-        has_srv  = srv is not None
+        has_srv   = srv is not None
         has_slave = self._active_slave is not None
 
         self._start_btn.setEnabled(has_srv)
@@ -324,7 +337,7 @@ class MainWindow(QMainWindow):
             is_running = srv.running
             self._start_btn.blockSignals(True)
             self._start_btn.setChecked(is_running)
-            self._start_btn.setText("Stop Server" if is_running else "Start Server")
+            self._start_btn.setText("Stop TCP Server" if is_running else "Start TCP Server")
             self._start_btn.blockSignals(False)
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -336,30 +349,30 @@ class MainWindow(QMainWindow):
         menu = QMenu(self)
 
         if item is None:
-            # Clicked on empty space
-            menu.addAction("Add Server", self._add_server)
+            menu.addAction("Add TCP Server", self._add_server)
         else:
             slave = item.data(0, ROLE_SLAVE)
             srv   = item.data(0, ROLE_SERVER)
 
             if slave is not None:
-                # Slave node
                 parent_srv = item.parent().data(0, ROLE_SERVER)
-                menu.addAction("Remove Slave", lambda: self._remove_slave(parent_srv, slave))
+                menu.addAction(
+                    "Remove Modbus Server",
+                    lambda: self._remove_slave(parent_srv, slave)
+                )
             elif srv is not None:
-                # Server node
-                menu.addAction("Edit Server…",  lambda: self._edit_server(srv))
-                menu.addAction("Add Slave",     lambda: self._add_slave_to_server(srv))
+                menu.addAction("Edit TCP Server…",    lambda: self._edit_server(srv))
+                menu.addAction("Add Modbus Server",   lambda: self._add_slave_to_server(srv))
                 menu.addSeparator()
                 if srv.running:
-                    menu.addAction("Stop Server",  lambda: self._stop_server(srv))
+                    menu.addAction("Stop TCP Server",  lambda: self._stop_server(srv))
                 else:
-                    menu.addAction("Start Server", lambda: self._start_server(srv))
+                    menu.addAction("Start TCP Server", lambda: self._start_server(srv))
                 menu.addSeparator()
                 menu.addAction("Save Server Config…", lambda: self._save_server_config(srv))
                 menu.addAction("Load Server Config…", lambda: self._load_server_config(srv))
                 menu.addSeparator()
-                menu.addAction("Remove Server", lambda: self._remove_server(srv))
+                menu.addAction("Remove TCP Server",   lambda: self._remove_server(srv))
 
         menu.exec(self.tree.viewport().mapToGlobal(pos))
 
@@ -377,7 +390,7 @@ class MainWindow(QMainWindow):
         if conflict:
             QMessageBox.warning(
                 self, "Address Conflict",
-                f"Another server ({conflict.name}) is already configured "
+                f"Another TCP server ({conflict.name}) is already configured "
                 f"on {cfg.host}:{cfg.port}."
             )
             return
@@ -387,8 +400,10 @@ class MainWindow(QMainWindow):
 
     def _edit_server(self, srv: ServerConfig):
         if srv.running:
-            QMessageBox.information(self, "Server Running",
-                                    "Stop the server before editing its configuration.")
+            QMessageBox.information(
+                self, "Server Running",
+                "Stop the TCP server before editing its configuration."
+            )
             return
         dlg = ServerDialog(self, config=srv)
         if dlg.exec() != ServerDialog.Accepted:
@@ -399,7 +414,7 @@ class MainWindow(QMainWindow):
         if conflict:
             QMessageBox.warning(
                 self, "Address Conflict",
-                f"Another server ({conflict.name}) is already configured "
+                f"Another TCP server ({conflict.name}) is already configured "
                 f"on {new_cfg.host}:{new_cfg.port}."
             )
             return
@@ -422,7 +437,7 @@ class MainWindow(QMainWindow):
             self.table.setEnabled(False)
             self._group_combo.setEnabled(False)
             self._context_label.setText(
-                "<i>Select a slave device in the tree to edit its registers.</i>"
+                "<i>Select a Modbus Server in the tree to edit its registers.</i>"
             )
             self._update_controls()
 
@@ -430,7 +445,7 @@ class MainWindow(QMainWindow):
         self._rebuild_tree()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # Slave CRUD
+    # Modbus Server (slave) CRUD
     # ══════════════════════════════════════════════════════════════════════════
 
     def _add_slave_to_server(self, srv: ServerConfig):
@@ -440,17 +455,14 @@ class MainWindow(QMainWindow):
             return
         slave = srv.add_slave(dlg.slave_id)
 
-        # If server is running, we can't add a slave dynamically (pymodbus
-        # doesn't support hot-adding slaves). Warn the user.
         if srv.running:
             QMessageBox.information(
                 self, "Server Restart Required",
-                f"Slave {dlg.slave_id} has been added to the configuration.\n"
-                "Stop and restart the server to activate the new slave."
+                f"Modbus Server {dlg.slave_id} has been added to the configuration.\n"
+                "Stop and restart the TCP server to activate the new Modbus Server."
             )
 
         self._rebuild_tree()
-        # Select the new slave
         srv_item = self._find_server_item(srv)
         if srv_item:
             for i in range(srv_item.childCount()):
@@ -463,7 +475,7 @@ class MainWindow(QMainWindow):
         if srv.running:
             QMessageBox.information(
                 self, "Server Running",
-                "Stop the server before removing a slave device."
+                "Stop the TCP server before removing a Modbus Server."
             )
             return
 
@@ -473,14 +485,14 @@ class MainWindow(QMainWindow):
             self._group_combo.setEnabled(False)
             self._context_label.setText(
                 f"<b>{srv.name}</b>  {srv.host}:{srv.port} — "
-                "select a slave to edit its registers."
+                "select a Modbus Server to edit its registers."
             )
 
         srv.remove_slave(slave.slave_id)
         self._rebuild_tree()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # Server start / stop
+    # Server start / stop (single)
     # ══════════════════════════════════════════════════════════════════════════
 
     def _toggle_server(self, checked: bool):
@@ -498,15 +510,16 @@ class MainWindow(QMainWindow):
         if srv.running:
             return
         if not srv.slaves:
-            QMessageBox.warning(self, "No Slaves",
-                                "Add at least one slave device before starting the server.")
+            QMessageBox.warning(
+                self, "No Modbus Servers",
+                "Add at least one Modbus Server before starting the TCP server."
+            )
             return
 
         # Save current table if it belongs to this server
         if self._active_server is srv and self._active_slave is not None:
             self._save_current_table_to_model()
 
-        # Build the ModbusServer with all slave IDs
         ms = ModbusServer(
             host=srv.host,
             port=srv.port,
@@ -514,7 +527,6 @@ class MainWindow(QMainWindow):
             slave_ids=[s.slave_id for s in srv.slaves],
         )
 
-        # Populate each slave's registers
         for slave in srv.slaves:
             self._populate_slave_registers(ms, slave, srv.zero_based)
 
@@ -522,13 +534,12 @@ class MainWindow(QMainWindow):
         srv.running = True
         self._running_servers[id(srv)] = ms
 
-        # Update tree colour
         srv_item = self._find_server_item(srv)
         if srv_item:
             self._update_server_item_color(srv_item, srv)
 
         self._update_controls()
-        logger.info(f"Server {srv.name} started on {srv.host}:{srv.port}")
+        logger.info(f"TCP server {srv.name} started on {srv.host}:{srv.port}")
 
     def _stop_server(self, srv: ServerConfig):
         ms = self._running_servers.pop(id(srv), None)
@@ -543,7 +554,27 @@ class MainWindow(QMainWindow):
             self._update_server_item_color(srv_item, srv)
 
         self._update_controls()
-        logger.info(f"Server {srv.name} stopped")
+        logger.info(f"TCP server {srv.name} stopped")
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Start All / Stop All
+    # ══════════════════════════════════════════════════════════════════════════
+
+    def _start_all_servers(self):
+        """Start every configured TCP server that is not already running."""
+        for srv in self.project.servers:
+            if not srv.running:
+                self._start_server(srv)
+
+    def _stop_all_servers(self):
+        """Stop every running TCP server."""
+        for srv in list(self.project.servers):
+            if srv.running:
+                self._stop_server(srv)
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # Populate registers into live server
+    # ══════════════════════════════════════════════════════════════════════════
 
     def _populate_slave_registers(self, ms, slave: SlaveConfig, zero_based: bool):
         """Push all register data from a SlaveConfig into the live ModbusServer."""
@@ -614,10 +645,15 @@ class MainWindow(QMainWindow):
             return
 
         slave = self._active_slave
+        items = slave.data[self._current_group]
+        row_count = len(items)
+
+        # Resize table to match actual row count (65536)
+        self.table.setRowCount(row_count)
         self.table.blockSignals(True)
 
-        for i in range(NUM_ROWS):
-            item = slave.data[self._current_group][i]
+        for i in range(row_count):
+            item = items[i]
 
             addr_item = QTableWidgetItem(str(self._get_display_address(item["addr"])))
             addr_item.setFlags(addr_item.flags() & ~Qt.ItemIsEditable)
@@ -762,7 +798,7 @@ class MainWindow(QMainWindow):
         if slave is None:
             return
         grp = self._current_group
-        for i in range(NUM_ROWS):
+        for i in range(self.table.rowCount()):
             if grp in BOOL_TYPES:
                 cb = self.table.cellWidget(i, 2)
                 if isinstance(cb, QCheckBox):
@@ -781,7 +817,6 @@ class MainWindow(QMainWindow):
     # ══════════════════════════════════════════════════════════════════════════
 
     def _new_project(self):
-        # Stop all running servers
         for srv in list(self.project.servers):
             if srv.running:
                 self._stop_server(srv)
@@ -792,7 +827,7 @@ class MainWindow(QMainWindow):
         self.table.setEnabled(False)
         self._group_combo.setEnabled(False)
         self._context_label.setText(
-            "<i>Select a slave device in the tree to edit its registers.</i>"
+            "<i>Select a Modbus Server in the tree to edit its registers.</i>"
         )
         self._update_controls()
         self._create_default_project()
@@ -812,7 +847,6 @@ class MainWindow(QMainWindow):
         if not path:
             return
 
-        # Stop all running servers
         for srv in list(self.project.servers):
             if srv.running:
                 self._stop_server(srv)
@@ -831,7 +865,7 @@ class MainWindow(QMainWindow):
         self.table.setEnabled(False)
         self._group_combo.setEnabled(False)
         self._context_label.setText(
-            "<i>Select a slave device in the tree to edit its registers.</i>"
+            "<i>Select a Modbus Server in the tree to edit its registers.</i>"
         )
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -854,8 +888,10 @@ class MainWindow(QMainWindow):
         if srv is None:
             return
         if srv.running:
-            QMessageBox.information(self, "Server Running",
-                                    "Stop the server before loading a new configuration.")
+            QMessageBox.information(
+                self, "Server Running",
+                "Stop the TCP server before loading a new configuration."
+            )
             return
         path, _ = QFileDialog.getOpenFileName(
             self, "Load Server Config", "", "JSON Files (*.json)"
@@ -868,7 +904,6 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "Load Error", str(e))
             return
 
-        # Merge: keep the existing server object but replace its data
         srv.name       = new_srv.name
         srv.host       = new_srv.host
         srv.port       = new_srv.port
@@ -884,7 +919,7 @@ class MainWindow(QMainWindow):
         self._update_controls()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # Per-slave CSV save / load (backward-compatible)
+    # Per-slave CSV save / load
     # ══════════════════════════════════════════════════════════════════════════
 
     def _save_slave_csv(self):
@@ -893,7 +928,8 @@ class MainWindow(QMainWindow):
         if slave is None:
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Slave Config", f"slave_{slave.slave_id}.csv",
+            self, "Save Modbus Server Config",
+            f"modbus_server_{slave.slave_id}.csv",
             "CSV Files (*.csv)"
         )
         if not path:
@@ -913,7 +949,7 @@ class MainWindow(QMainWindow):
         if slave is None:
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load Slave Config", "", "CSV Files (*.csv)"
+            self, "Load Modbus Server Config", "", "CSV Files (*.csv)"
         )
         if not path:
             return

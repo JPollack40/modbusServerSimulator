@@ -4,8 +4,8 @@ device_config.py – Data-model classes for the multi-server project.
 Hierarchy:
     Project
      └── ServerConfig  (unique IP:port, owns one asyncio/thread server)
-          └── SlaveConfig  (unique slave ID within that server)
-               └── data  (dict of 4 register groups, each a list of 100 row-dicts)
+          └── SlaveConfig  (unique Modbus Server ID within that server)
+               └── data  (dict of 4 register groups, each a list of 65536 row-dicts)
 """
 
 from __future__ import annotations
@@ -17,7 +17,8 @@ from typing import Optional
 from models.register_data import ModbusDataType
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-NUM_ROWS = 100
+# Full valid Modbus address range: 0x0000–0xFFFF (65536 registers per group)
+NUM_ROWS = 65536
 
 
 def _default_bool_rows() -> list[dict]:

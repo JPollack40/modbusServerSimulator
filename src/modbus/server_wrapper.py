@@ -24,13 +24,16 @@ logger = logging.getLogger(__name__)
 class SlaveDataBlocks:
     """Holds the four pymodbus data blocks for one slave ID."""
 
+    # Full Modbus range: 65536 registers (0x0000–0xFFFF).
+    # We allocate 65537 slots so that 1-based addressing (addr 1–65536)
+    # fits without remapping (slot 0 is unused in 1-based mode).
+    _BLOCK_SIZE = 65537
+
     def __init__(self):
-        # 101 slots: addresses 0-100 cover both zero-based (0-99) and
-        # one-based (1-100) addressing without remapping.
-        self.coils             = ModbusSequentialDataBlock(0, [0] * 101)
-        self.discrete_inputs   = ModbusSequentialDataBlock(0, [0] * 101)
-        self.holding_registers = ModbusSequentialDataBlock(0, [0] * 101)
-        self.input_registers   = ModbusSequentialDataBlock(0, [0] * 101)
+        self.coils             = ModbusSequentialDataBlock(0, [0] * self._BLOCK_SIZE)
+        self.discrete_inputs   = ModbusSequentialDataBlock(0, [0] * self._BLOCK_SIZE)
+        self.holding_registers = ModbusSequentialDataBlock(0, [0] * self._BLOCK_SIZE)
+        self.input_registers   = ModbusSequentialDataBlock(0, [0] * self._BLOCK_SIZE)
 
     def get_store(self, reg_type: str):
         return {
@@ -115,8 +118,8 @@ class ModbusServer(threading.Thread):
 
     def set_initial_values(self, slave_id: int, reg_type: str, values: list):
         """
-        Bulk-write 100 raw 16-bit (or boolean) values for one slave's register
-        group.  `values` must have exactly 100 elements.
+        Bulk-write raw 16-bit (or boolean) values for one slave's register group.
+        `values` length must match the number of configured rows (up to 65536).
         """
         blocks = self._slaves.get(slave_id)
         if blocks is None:
@@ -169,8 +172,8 @@ class ModbusServer(threading.Thread):
 
         def remap(store):
             old_start = 0 if self.zero_based else 1
-            values = store.getValues(old_start, 100)
-            store.setValues(0, [0] * 101)
+            values = store.getValues(old_start, 65536)
+            store.setValues(0, [0] * SlaveDataBlocks._BLOCK_SIZE)
             new_start = 0 if zero_based else 1
             store.setValues(new_start, values)
 

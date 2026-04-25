@@ -547,8 +547,6 @@ class MainWindow(QMainWindow):
 
     def _populate_slave_registers(self, ms, slave: SlaveConfig, zero_based: bool):
         """Push all register data from a SlaveConfig into the live ModbusServer."""
-        from models.register_data import DataConverter, get_register_count, _dtype_from_str as _d
-
         for group, items in slave.data.items():
             reg_type = _map_group_to_type(group)
 

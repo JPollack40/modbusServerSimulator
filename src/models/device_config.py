@@ -25,6 +25,10 @@ from models.register_data import ModbusDataType
 # Full valid Modbus address range: 0x0000–0xFFFF (65 536 registers per group)
 NUM_ROWS = 65536
 
+# 5-digit Modbus addressing: each group prefix (0x, 1x, 3x, 4x) allows
+# addresses 00001–09999, giving 9 999 usable registers per group.
+NUM_ROWS_5DIGIT = 9999
+
 _DEFAULT_BOOL_TYPE = "Boolean"
 _DEFAULT_BOOL_VAL  = "False"
 _DEFAULT_REG_TYPE  = ModbusDataType.UINT16.value
@@ -155,6 +159,7 @@ class ServerConfig:
     host: str = "0.0.0.0"
     port: int = 502
     zero_based: bool = False
+    six_digit: bool = False   # False = 5-digit (9 999 regs), True = 6-digit (65 536 regs)
     slaves: list[SlaveConfig] = field(default_factory=list)
 
     # Runtime state (not serialised)
@@ -185,6 +190,7 @@ class ServerConfig:
             "host":       self.host,
             "port":       self.port,
             "zero_based": self.zero_based,
+            "six_digit":  self.six_digit,
             "slaves":     [s.to_dict() for s in self.slaves],
         }
 
@@ -195,6 +201,7 @@ class ServerConfig:
             host       = d.get("host", "0.0.0.0"),
             port       = int(d.get("port", 502)),
             zero_based = bool(d.get("zero_based", False)),
+            six_digit  = bool(d.get("six_digit", False)),
         )
         for sd in d.get("slaves", []):
             sc.slaves.append(SlaveConfig.from_dict(sd))

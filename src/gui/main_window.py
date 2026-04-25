@@ -27,7 +27,7 @@ from PySide6.QtGui import QColor, QAction, QFont, QBrush
 
 from models.register_data import ModbusDataType, DataConverter, get_register_count
 from models.device_config import (
-    Project, ServerConfig, SlaveConfig, NUM_ROWS,
+    Project, ServerConfig, SlaveConfig, NUM_ROWS, NUM_ROWS_5DIGIT,
     BOOL_GROUPS, default_row, is_default_row,
     _DEFAULT_BOOL_TYPE, _DEFAULT_BOOL_VAL,
     _DEFAULT_REG_TYPE, _DEFAULT_REG_VAL,
@@ -89,22 +89,25 @@ class RegisterTableModel(QAbstractTableModel):
     Lazy model for one register group of one SlaveConfig.
 
     Row data is fetched from the sparse SlaveConfig on demand; only
-    non-default rows are stored in memory.  The model reports NUM_ROWS rows
-    so the scroll-bar covers the full address space.
+    non-default rows are stored in memory.  The model reports `row_count`
+    rows so the scroll-bar covers exactly the valid Modbus address space
+    for the chosen addressing mode (9 999 for 5-digit, 65 536 for 6-digit).
     """
 
     def __init__(self, slave: SlaveConfig, group: str,
-                 addr_offset: int, parent=None):
+                 addr_offset: int, row_count: int = NUM_ROWS_5DIGIT,
+                 parent=None):
         super().__init__(parent)
         self._slave       = slave
         self._group       = group
         self._addr_offset = addr_offset
+        self._row_count   = row_count
         self._is_bool     = group in BOOL_GROUPS
 
     # ── QAbstractTableModel interface ──────────────────────────────────────────
 
     def rowCount(self, parent=QModelIndex()) -> int:
-        return NUM_ROWS
+        return self._row_count
 
     def columnCount(self, parent=QModelIndex()) -> int:
         return 3
@@ -427,6 +430,15 @@ class MainWindow(QMainWindow):
         self._zero_cb.stateChanged.connect(self._on_zero_based_changed)
         ctrl_bar.addWidget(self._zero_cb)
 
+        self._six_digit_cb = QCheckBox("6-Digit Addressing (65 536 regs)")
+        self._six_digit_cb.setToolTip(
+            "Unchecked: 5-digit mode — valid addresses 00001–09999 per group (9 999 registers)\n"
+            "Checked:   6-digit mode — valid addresses 000001–065536 per group (65 536 registers)"
+        )
+        self._six_digit_cb.setEnabled(False)
+        self._six_digit_cb.stateChanged.connect(self._on_six_digit_changed)
+        ctrl_bar.addWidget(self._six_digit_cb)
+
         ctrl_bar.addStretch()
 
         self._save_srv_btn = QPushButton("Save Server…")
@@ -589,10 +601,16 @@ class MainWindow(QMainWindow):
         self._save_slave_btn.setEnabled(has_slave)
         self._load_slave_btn.setEnabled(has_slave)
 
+        self._six_digit_cb.setEnabled(has_srv)
+
         if srv:
             self._zero_cb.blockSignals(True)
             self._zero_cb.setChecked(srv.zero_based)
             self._zero_cb.blockSignals(False)
+
+            self._six_digit_cb.blockSignals(True)
+            self._six_digit_cb.setChecked(srv.six_digit)
+            self._six_digit_cb.blockSignals(False)
 
             is_running = srv.running
             self._start_btn.blockSignals(True)
@@ -840,17 +858,26 @@ class MainWindow(QMainWindow):
     # Table model
     # ══════════════════════════════════════════════════════════════════════════
 
+    def _on_six_digit_changed(self, state: int):
+        srv = self._active_server
+        if srv is None:
+            return
+        srv.six_digit = self._six_digit_cb.isChecked()
+        if self._active_slave is not None:
+            self._load_table_model()
+
     def _load_table_model(self):
         if self._active_slave is None:
             return
 
-        slave  = self._active_slave
-        group  = self._current_group
-        srv    = self._active_server
-        offset = _group_addr_offset(group, srv.zero_based if srv else False)
-        is_bool = group in BOOL_GROUPS
+        slave     = self._active_slave
+        group     = self._current_group
+        srv       = self._active_server
+        offset    = _group_addr_offset(group, srv.zero_based if srv else False)
+        is_bool   = group in BOOL_GROUPS
+        row_count = NUM_ROWS if (srv and srv.six_digit) else NUM_ROWS_5DIGIT
 
-        model = RegisterTableModel(slave, group, offset)
+        model = RegisterTableModel(slave, group, offset, row_count)
         model.dataChanged.connect(self._on_model_data_changed)
         self._reg_model = model
 

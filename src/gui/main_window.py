@@ -1,5 +1,9 @@
 """
 main_window.py – PHS Modbus Server Simulator GUI (multi-server / multi-slave)
+
+Uses a QAbstractTableModel + QTableView for the register table so that all
+65 536 rows are rendered lazily (only visible rows are painted), keeping the
+GUI responsive regardless of register count.
 """
 
 from __future__ import annotations
@@ -9,16 +13,25 @@ import logging
 
 from PySide6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
-    QLabel, QLineEdit, QComboBox, QPushButton, QTableWidget,
-    QTableWidgetItem, QHeaderView, QFileDialog, QCheckBox,
+    QLabel, QLineEdit, QComboBox, QPushButton,
+    QTableView, QHeaderView, QFileDialog, QCheckBox,
     QAbstractItemView, QSplitter, QTreeWidget, QTreeWidgetItem,
-    QMessageBox, QMenu, QToolBar, QSizePolicy
+    QMessageBox, QMenu, QToolBar, QStyledItemDelegate,
+    QStyleOptionViewItem, QApplication,
 )
-from PySide6.QtCore import Qt, QSize
-from PySide6.QtGui import QColor, QAction, QFont
+from PySide6.QtCore import (
+    Qt, QSize, QAbstractTableModel, QModelIndex,
+    QSortFilterProxyModel,
+)
+from PySide6.QtGui import QColor, QAction, QFont, QBrush
 
 from models.register_data import ModbusDataType, DataConverter, get_register_count
-from models.device_config import Project, ServerConfig, SlaveConfig, NUM_ROWS
+from models.device_config import (
+    Project, ServerConfig, SlaveConfig, NUM_ROWS,
+    BOOL_GROUPS, default_row, is_default_row,
+    _DEFAULT_BOOL_TYPE, _DEFAULT_BOOL_VAL,
+    _DEFAULT_REG_TYPE, _DEFAULT_REG_VAL,
+)
 from gui.server_dialog import ServerDialog
 from gui.slave_dialog import SlaveDialog
 
@@ -26,8 +39,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # ── Constants ──────────────────────────────────────────────────────────────────
-BOOL_TYPES = {"Coils", "Discrete Inputs"}
-REG_TYPES  = {"Holding Registers", "Input Registers"}
 ALL_DTYPES = [t.value for t in ModbusDataType]
 
 # Tree item user-data roles
@@ -37,6 +48,12 @@ ROLE_SLAVE  = Qt.UserRole + 1
 # Status colours
 COLOR_RUNNING = QColor(0, 160, 0)
 COLOR_STOPPED = QColor(160, 0, 0)
+COLOR_SLAVE   = QColor(200, 200, 200)   # greyed-out background for slave rows
+
+COL_ADDR  = 0
+COL_TYPE  = 1
+COL_VALUE = 2
+HEADERS   = ["Address", "Data Type", "Value"]
 
 
 def _dtype_from_str(text: str) -> ModbusDataType:
@@ -46,7 +63,272 @@ def _dtype_from_str(text: str) -> ModbusDataType:
     return ModbusDataType.UINT16
 
 
+def _group_addr_offset(group: str, zero_based: bool) -> int:
+    if zero_based:
+        return {"Coils": 0, "Discrete Inputs": 10000,
+                "Holding Registers": 40000, "Input Registers": 30000}[group]
+    return {"Coils": 1, "Discrete Inputs": 10001,
+            "Holding Registers": 40001, "Input Registers": 30001}[group]
+
+
+def _map_group_to_type(group: str) -> str:
+    return {
+        "Coils":             "coils",
+        "Discrete Inputs":   "discrete_inputs",
+        "Holding Registers": "holding_registers",
+        "Input Registers":   "input_registers",
+    }[group]
+
+
 # ══════════════════════════════════════════════════════════════════════════════
+# Virtual table model
+# ══════════════════════════════════════════════════════════════════════════════
+
+class RegisterTableModel(QAbstractTableModel):
+    """
+    Lazy model for one register group of one SlaveConfig.
+
+    Row data is fetched from the sparse SlaveConfig on demand; only
+    non-default rows are stored in memory.  The model reports NUM_ROWS rows
+    so the scroll-bar covers the full address space.
+    """
+
+    def __init__(self, slave: SlaveConfig, group: str,
+                 addr_offset: int, parent=None):
+        super().__init__(parent)
+        self._slave       = slave
+        self._group       = group
+        self._addr_offset = addr_offset
+        self._is_bool     = group in BOOL_GROUPS
+
+    # ── QAbstractTableModel interface ──────────────────────────────────────────
+
+    def rowCount(self, parent=QModelIndex()) -> int:
+        return NUM_ROWS
+
+    def columnCount(self, parent=QModelIndex()) -> int:
+        return 3
+
+    def headerData(self, section, orientation, role=Qt.DisplayRole):
+        if role == Qt.DisplayRole and orientation == Qt.Horizontal:
+            return HEADERS[section]
+        return None
+
+    def flags(self, index: QModelIndex) -> Qt.ItemFlag:
+        base = Qt.ItemIsEnabled | Qt.ItemIsSelectable
+        col  = index.column()
+        row  = index.row()
+        if col == COL_ADDR:
+            return base   # address is read-only
+        rd = self._slave.get_row(self._group, row)
+        if rd["slave_of"] is not None:
+            return base   # slave rows are read-only
+        return base | Qt.ItemIsEditable
+
+    def data(self, index: QModelIndex, role=Qt.DisplayRole):
+        if not index.isValid():
+            return None
+        row = index.row()
+        col = index.column()
+        rd  = self._slave.get_row(self._group, row)
+
+        if role == Qt.DisplayRole or role == Qt.EditRole:
+            if col == COL_ADDR:
+                return str(self._addr_offset + row)
+            if col == COL_TYPE:
+                return rd["type"]
+            if col == COL_VALUE:
+                if rd["slave_of"] is not None:
+                    return "—"
+                return rd["val"]
+
+        if role == Qt.BackgroundRole:
+            if rd["slave_of"] is not None:
+                return QBrush(COLOR_SLAVE)
+
+        if role == Qt.CheckStateRole and col == COL_VALUE and self._is_bool:
+            return Qt.Checked if rd["val"] == "True" else Qt.Unchecked
+
+        return None
+
+    def setData(self, index: QModelIndex, value, role=Qt.EditRole) -> bool:
+        if not index.isValid():
+            return False
+        row = index.row()
+        col = index.column()
+        rd  = dict(self._slave.get_row(self._group, row))   # copy
+
+        if rd["slave_of"] is not None:
+            return False
+
+        changed = False
+
+        if role == Qt.EditRole:
+            if col == COL_TYPE and not self._is_bool:
+                if rd["type"] != value:
+                    rd["type"] = value
+                    changed = True
+            elif col == COL_VALUE:
+                if rd["val"] != value:
+                    rd["val"] = value
+                    changed = True
+
+        if role == Qt.CheckStateRole and col == COL_VALUE and self._is_bool:
+            new_val = "True" if (value == Qt.Checked or value == 2) else "False"
+            if rd["val"] != new_val:
+                rd["val"] = new_val
+                changed = True
+
+        if changed:
+            self._slave.set_row(self._group, row, rd)
+            self.dataChanged.emit(index, index, [role])
+        return changed
+
+    # ── Helpers ────────────────────────────────────────────────────────────────
+
+    def refresh(self):
+        """Force a full repaint (e.g. after dtype change cascades)."""
+        self.beginResetModel()
+        self.endResetModel()
+
+    def get_row_dict(self, row: int) -> dict:
+        return self._slave.get_row(self._group, row)
+
+    def apply_dtype_change(self, master_row: int, new_type_str: str):
+        """
+        Change the data type of master_row, freeing old slave rows and
+        claiming new ones.  Returns the list of affected row indices.
+        """
+        dtype     = _dtype_from_str(new_type_str)
+        reg_count = get_register_count(dtype)
+
+        # Update master row type
+        rd = dict(self._slave.get_row(self._group, master_row))
+        rd["type"] = new_type_str
+        self._slave.set_row(self._group, master_row, rd)
+
+        # Free previously owned slave rows
+        for r, row_rd in list(self._slave.data[self._group].items()):
+            if row_rd.get("slave_of") == master_row:
+                self._slave.data[self._group].pop(r)
+
+        # Claim new slave rows
+        for offset in range(1, reg_count):
+            slave_row = master_row + offset
+            if slave_row >= NUM_ROWS:
+                break
+            existing = self._slave.get_row(self._group, slave_row)
+            if existing["slave_of"] is None:
+                # Only claim if this row isn't itself a master of other rows
+                has_own_slaves = any(
+                    v.get("slave_of") == slave_row
+                    for v in self._slave.data[self._group].values()
+                )
+                if not has_own_slaves:
+                    new_rd = dict(existing)
+                    new_rd["slave_of"] = master_row
+                    self._slave.set_row(self._group, slave_row, new_rd)
+
+        self.refresh()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Custom delegate for type combo and value editing
+# ══════════════════════════════════════════════════════════════════════════════
+
+class RegisterDelegate(QStyledItemDelegate):
+    """
+    Provides a QComboBox editor for the Data Type column and a plain
+    QLineEdit for the Value column.  Boolean groups get a checkbox in the
+    Value column (handled via CheckStateRole in the model).
+    """
+
+    def __init__(self, is_bool: bool, on_dtype_changed=None, parent=None):
+        super().__init__(parent)
+        self._is_bool         = is_bool
+        self._on_dtype_changed = on_dtype_changed   # callable(row, new_type_str)
+
+    def createEditor(self, parent, option, index):
+        col = index.column()
+        rd  = index.model().get_row_dict(index.row())
+        if rd.get("slave_of") is not None:
+            return None   # slave rows not editable
+
+        if col == COL_TYPE and not self._is_bool:
+            combo = QComboBox(parent)
+            combo.addItems(ALL_DTYPES)
+            return combo
+
+        if col == COL_VALUE:
+            if self._is_bool:
+                return None   # handled via CheckStateRole
+            return QLineEdit(parent)
+
+        return None
+
+    def setEditorData(self, editor, index):
+        val = index.data(Qt.EditRole)
+        if isinstance(editor, QComboBox):
+            idx = editor.findText(val or "")
+            if idx >= 0:
+                editor.setCurrentIndex(idx)
+        elif isinstance(editor, QLineEdit):
+            editor.setText(val or "")
+
+    def setModelData(self, editor, model, index):
+        col = index.column()
+        if isinstance(editor, QComboBox):
+            new_type = editor.currentText()
+            old_type = index.data(Qt.EditRole)
+            if new_type != old_type:
+                model.apply_dtype_change(index.row(), new_type)
+                if self._on_dtype_changed:
+                    self._on_dtype_changed(index.row(), new_type)
+        elif isinstance(editor, QLineEdit):
+            model.setData(index, editor.text(), Qt.EditRole)
+
+    def paint(self, painter, option, index):
+        col = index.column()
+        rd  = index.model().get_row_dict(index.row())
+
+        # Grey background for slave rows
+        if rd.get("slave_of") is not None:
+            painter.fillRect(option.rect, COLOR_SLAVE)
+
+        # Draw checkbox for boolean value column
+        if col == COL_VALUE and self._is_bool and rd.get("slave_of") is None:
+            check_state = index.data(Qt.CheckStateRole)
+            opt = QStyleOptionViewItem(option)
+            opt.features |= QStyleOptionViewItem.HasCheckIndicator
+            opt.checkState = check_state
+            QApplication.style().drawControl(
+                QApplication.style().CE_ItemViewItem, opt, painter
+            )
+            return
+
+        super().paint(painter, option, index)
+
+    def editorEvent(self, event, model, option, index):
+        """Toggle boolean checkbox on click."""
+        col = index.column()
+        if col == COL_VALUE and self._is_bool:
+            rd = model.get_row_dict(index.row())
+            if rd.get("slave_of") is not None:
+                return False
+            from PySide6.QtCore import QEvent
+            from PySide6.QtGui import QMouseEvent
+            if event.type() == QEvent.MouseButtonRelease:
+                current = index.data(Qt.CheckStateRole)
+                new_state = Qt.Unchecked if current == Qt.Checked else Qt.Checked
+                model.setData(index, new_state, Qt.CheckStateRole)
+                return True
+        return super().editorEvent(event, model, option, index)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# Main window
+# ══════════════════════════════════════════════════════════════════════════════
+
 class MainWindow(QMainWindow):
     """Main application window."""
 
@@ -58,13 +340,16 @@ class MainWindow(QMainWindow):
         # ── Project model ──────────────────────────────────────────────────
         self.project = Project()
 
-        # Runtime: ServerConfig → ModbusServer thread
-        self._running_servers: dict[int, object] = {}   # id(ServerConfig) → ModbusServer
+        # Runtime: id(ServerConfig) → ModbusServer thread
+        self._running_servers: dict[int, object] = {}
 
         # Currently selected (server, slave) for the register editor
         self._active_server: ServerConfig | None = None
         self._active_slave:  SlaveConfig  | None = None
         self._current_group: str = "Coils"
+
+        # Current table model (RegisterTableModel)
+        self._reg_model: RegisterTableModel | None = None
 
         # ── Toolbar ────────────────────────────────────────────────────────
         tb = QToolBar("Project")
@@ -104,8 +389,7 @@ class MainWindow(QMainWindow):
         left_layout = QVBoxLayout(left_panel)
         left_layout.setContentsMargins(4, 4, 4, 4)
 
-        tree_label = QLabel("<b>Project Tree</b>")
-        left_layout.addWidget(tree_label)
+        left_layout.addWidget(QLabel("<b>Project Tree</b>"))
 
         self.tree = QTreeWidget()
         self.tree.setHeaderHidden(True)
@@ -123,7 +407,6 @@ class MainWindow(QMainWindow):
         right_layout = QVBoxLayout(right_panel)
         right_layout.setContentsMargins(4, 4, 4, 4)
 
-        # Context bar (shows which device is being edited)
         self._context_label = QLabel(
             "<i>Select a Modbus Server in the tree to edit its registers.</i>"
         )
@@ -181,11 +464,14 @@ class MainWindow(QMainWindow):
         grp_bar.addStretch()
         right_layout.addLayout(grp_bar)
 
-        # Register table — rows are populated lazily via setRowCount
-        self.table = QTableWidget(0, 3)
-        self.table.setHorizontalHeaderLabels(["Address", "Data Type", "Value"])
+        # Virtual register table
+        self.table = QTableView()
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setEditTriggers(
+            QAbstractItemView.DoubleClicked | QAbstractItemView.SelectedClicked
+        )
         self.table.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.verticalHeader().setVisible(False)
         self.table.setEnabled(False)
         right_layout.addWidget(self.table)
 
@@ -193,7 +479,6 @@ class MainWindow(QMainWindow):
         splitter.setStretchFactor(0, 0)
         splitter.setStretchFactor(1, 1)
 
-        # Start with one default TCP server + Modbus Server so the app is immediately usable
         self._create_default_project()
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -205,7 +490,6 @@ class MainWindow(QMainWindow):
         srv.add_slave(1)
         self.project.add_server(srv)
         self._rebuild_tree()
-        # Select the first Modbus Server automatically
         root = self.tree.topLevelItem(0)
         if root and root.childCount() > 0:
             self.tree.setCurrentItem(root.child(0))
@@ -215,27 +499,20 @@ class MainWindow(QMainWindow):
     # ══════════════════════════════════════════════════════════════════════════
 
     def _rebuild_tree(self):
-        """Rebuild the entire project tree from self.project."""
         self.tree.blockSignals(True)
         self.tree.clear()
-
         for srv in self.project.servers:
             srv_item = self._make_server_item(srv)
             self.tree.addTopLevelItem(srv_item)
             for slave in srv.slaves:
-                slave_item = self._make_slave_item(slave)
-                srv_item.addChild(slave_item)
+                srv_item.addChild(self._make_slave_item(slave))
             srv_item.setExpanded(True)
-
         self.tree.blockSignals(False)
 
     def _make_server_item(self, srv: ServerConfig) -> QTreeWidgetItem:
-        label = f"🖥  {srv.name}  [{srv.host}:{srv.port}]"
-        item = QTreeWidgetItem([label])
+        item = QTreeWidgetItem([f"🖥  {srv.name}  [{srv.host}:{srv.port}]"])
         item.setData(0, ROLE_SERVER, srv)
-        font = item.font(0)
-        font.setBold(True)
-        item.setFont(0, font)
+        font = item.font(0); font.setBold(True); item.setFont(0, font)
         self._update_server_item_color(item, srv)
         return item
 
@@ -245,24 +522,13 @@ class MainWindow(QMainWindow):
         return item
 
     def _update_server_item_color(self, item: QTreeWidgetItem, srv: ServerConfig):
-        color = COLOR_RUNNING if srv.running else COLOR_STOPPED
-        item.setForeground(0, color)
+        item.setForeground(0, COLOR_RUNNING if srv.running else COLOR_STOPPED)
 
     def _find_server_item(self, srv: ServerConfig) -> QTreeWidgetItem | None:
         for i in range(self.tree.topLevelItemCount()):
             item = self.tree.topLevelItem(i)
             if item.data(0, ROLE_SERVER) is srv:
                 return item
-        return None
-
-    def _find_slave_item(self, srv: ServerConfig, slave: SlaveConfig) -> QTreeWidgetItem | None:
-        srv_item = self._find_server_item(srv)
-        if srv_item is None:
-            return None
-        for i in range(srv_item.childCount()):
-            child = srv_item.child(i)
-            if child.data(0, ROLE_SLAVE) is slave:
-                return child
         return None
 
     # ══════════════════════════════════════════════════════════════════════════
@@ -272,33 +538,28 @@ class MainWindow(QMainWindow):
     def _on_tree_selection_changed(self, current: QTreeWidgetItem, _previous):
         if current is None:
             return
-
         slave = current.data(0, ROLE_SLAVE)
         srv   = current.data(0, ROLE_SERVER)
 
         if slave is not None:
-            # A Modbus Server node was selected — find its parent TCP server
             parent = current.parent()
             if parent:
                 srv = parent.data(0, ROLE_SERVER)
             self._select_slave(srv, slave)
         elif srv is not None:
-            # A TCP server node was selected — just update controls, no table
             self._active_server = srv
             self._active_slave  = None
+            self._reg_model     = None
+            self.table.setModel(None)
+            self.table.setEnabled(False)
+            self._group_combo.setEnabled(False)
             self._update_controls()
             self._context_label.setText(
                 f"<b>{srv.name}</b>  {srv.host}:{srv.port} — "
-                f"select a Modbus Server to edit its registers."
+                "select a Modbus Server to edit its registers."
             )
-            self.table.setEnabled(False)
-            self._group_combo.setEnabled(False)
 
     def _select_slave(self, srv: ServerConfig, slave: SlaveConfig):
-        """Save current table state, then switch to the new Modbus Server."""
-        if self._active_slave is not None:
-            self._save_current_table_to_model()
-
         self._active_server = srv
         self._active_slave  = slave
         self._current_group = "Coils"
@@ -314,11 +575,10 @@ class MainWindow(QMainWindow):
         )
         self.table.setEnabled(True)
         self._group_combo.setEnabled(True)
-        self._load_table_data()
+        self._load_table_model()
 
     def _update_controls(self):
-        """Sync toolbar buttons and zero-based checkbox with active server."""
-        srv = self._active_server
+        srv       = self._active_server
         has_srv   = srv is not None
         has_slave = self._active_slave is not None
 
@@ -356,13 +616,11 @@ class MainWindow(QMainWindow):
 
             if slave is not None:
                 parent_srv = item.parent().data(0, ROLE_SERVER)
-                menu.addAction(
-                    "Remove Modbus Server",
-                    lambda: self._remove_slave(parent_srv, slave)
-                )
+                menu.addAction("Remove Modbus Server",
+                               lambda: self._remove_slave(parent_srv, slave))
             elif srv is not None:
-                menu.addAction("Edit TCP Server…",    lambda: self._edit_server(srv))
-                menu.addAction("Add Modbus Server",   lambda: self._add_slave_to_server(srv))
+                menu.addAction("Edit TCP Server…",  lambda: self._edit_server(srv))
+                menu.addAction("Add Modbus Server", lambda: self._add_slave_to_server(srv))
                 menu.addSeparator()
                 if srv.running:
                     menu.addAction("Stop TCP Server",  lambda: self._stop_server(srv))
@@ -372,7 +630,7 @@ class MainWindow(QMainWindow):
                 menu.addAction("Save Server Config…", lambda: self._save_server_config(srv))
                 menu.addAction("Load Server Config…", lambda: self._load_server_config(srv))
                 menu.addSeparator()
-                menu.addAction("Remove TCP Server",   lambda: self._remove_server(srv))
+                menu.addAction("Remove TCP Server", lambda: self._remove_server(srv))
 
         menu.exec(self.tree.viewport().mapToGlobal(pos))
 
@@ -385,62 +643,44 @@ class MainWindow(QMainWindow):
         if dlg.exec() != ServerDialog.Accepted:
             return
         cfg = dlg.result_config
-
         conflict = self.project.find_conflict(cfg.host, cfg.port)
         if conflict:
-            QMessageBox.warning(
-                self, "Address Conflict",
+            QMessageBox.warning(self, "Address Conflict",
                 f"Another TCP server ({conflict.name}) is already configured "
-                f"on {cfg.host}:{cfg.port}."
-            )
+                f"on {cfg.host}:{cfg.port}.")
             return
-
         self.project.add_server(cfg)
         self._rebuild_tree()
 
     def _edit_server(self, srv: ServerConfig):
         if srv.running:
-            QMessageBox.information(
-                self, "Server Running",
-                "Stop the TCP server before editing its configuration."
-            )
+            QMessageBox.information(self, "Server Running",
+                "Stop the TCP server before editing its configuration.")
             return
         dlg = ServerDialog(self, config=srv)
         if dlg.exec() != ServerDialog.Accepted:
             return
         new_cfg = dlg.result_config
-
         conflict = self.project.find_conflict(new_cfg.host, new_cfg.port, exclude=srv)
         if conflict:
-            QMessageBox.warning(
-                self, "Address Conflict",
+            QMessageBox.warning(self, "Address Conflict",
                 f"Another TCP server ({conflict.name}) is already configured "
-                f"on {new_cfg.host}:{new_cfg.port}."
-            )
+                f"on {new_cfg.host}:{new_cfg.port}.")
             return
-
-        srv.name       = new_cfg.name
-        srv.host       = new_cfg.host
-        srv.port       = new_cfg.port
-        srv.zero_based = new_cfg.zero_based
-
-        self._rebuild_tree()
-        self._update_controls()
+        srv.name = new_cfg.name; srv.host = new_cfg.host
+        srv.port = new_cfg.port; srv.zero_based = new_cfg.zero_based
+        self._rebuild_tree(); self._update_controls()
 
     def _remove_server(self, srv: ServerConfig):
         if srv.running:
             self._stop_server(srv)
-
         if srv is self._active_server:
-            self._active_server = None
-            self._active_slave  = None
-            self.table.setEnabled(False)
-            self._group_combo.setEnabled(False)
+            self._active_server = None; self._active_slave = None
+            self._reg_model = None; self.table.setModel(None)
+            self.table.setEnabled(False); self._group_combo.setEnabled(False)
             self._context_label.setText(
-                "<i>Select a Modbus Server in the tree to edit its registers.</i>"
-            )
+                "<i>Select a Modbus Server in the tree to edit its registers.</i>")
             self._update_controls()
-
         self.project.remove_server(srv)
         self._rebuild_tree()
 
@@ -454,45 +694,35 @@ class MainWindow(QMainWindow):
         if dlg.exec() != SlaveDialog.Accepted:
             return
         slave = srv.add_slave(dlg.slave_id)
-
         if srv.running:
-            QMessageBox.information(
-                self, "Server Restart Required",
-                f"Modbus Server {dlg.slave_id} has been added to the configuration.\n"
-                "Stop and restart the TCP server to activate the new Modbus Server."
-            )
-
+            QMessageBox.information(self, "Server Restart Required",
+                f"Modbus Server {dlg.slave_id} added.\n"
+                "Stop and restart the TCP server to activate it.")
         self._rebuild_tree()
         srv_item = self._find_server_item(srv)
         if srv_item:
             for i in range(srv_item.childCount()):
                 child = srv_item.child(i)
                 if child.data(0, ROLE_SLAVE) is slave:
-                    self.tree.setCurrentItem(child)
-                    break
+                    self.tree.setCurrentItem(child); break
 
     def _remove_slave(self, srv: ServerConfig, slave: SlaveConfig):
         if srv.running:
-            QMessageBox.information(
-                self, "Server Running",
-                "Stop the TCP server before removing a Modbus Server."
-            )
+            QMessageBox.information(self, "Server Running",
+                "Stop the TCP server before removing a Modbus Server.")
             return
-
         if slave is self._active_slave:
-            self._active_slave = None
-            self.table.setEnabled(False)
+            self._active_slave = None; self._reg_model = None
+            self.table.setModel(None); self.table.setEnabled(False)
             self._group_combo.setEnabled(False)
             self._context_label.setText(
                 f"<b>{srv.name}</b>  {srv.host}:{srv.port} — "
-                "select a Modbus Server to edit its registers."
-            )
-
+                "select a Modbus Server to edit its registers.")
         srv.remove_slave(slave.slave_id)
         self._rebuild_tree()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # Server start / stop (single)
+    # Server start / stop
     # ══════════════════════════════════════════════════════════════════════════
 
     def _toggle_server(self, checked: bool):
@@ -506,27 +736,18 @@ class MainWindow(QMainWindow):
 
     def _start_server(self, srv: ServerConfig):
         from modbus.server_wrapper import ModbusServer
-
         if srv.running:
             return
         if not srv.slaves:
-            QMessageBox.warning(
-                self, "No Modbus Servers",
-                "Add at least one Modbus Server before starting the TCP server."
-            )
+            QMessageBox.warning(self, "No Modbus Servers",
+                "Add at least one Modbus Server before starting the TCP server.")
             return
 
-        # Save current table if it belongs to this server
-        if self._active_server is srv and self._active_slave is not None:
-            self._save_current_table_to_model()
-
         ms = ModbusServer(
-            host=srv.host,
-            port=srv.port,
+            host=srv.host, port=srv.port,
             zero_based=srv.zero_based,
             slave_ids=[s.slave_id for s in srv.slaves],
         )
-
         for slave in srv.slaves:
             self._populate_slave_registers(ms, slave, srv.zero_based)
 
@@ -537,37 +758,26 @@ class MainWindow(QMainWindow):
         srv_item = self._find_server_item(srv)
         if srv_item:
             self._update_server_item_color(srv_item, srv)
-
         self._update_controls()
         logger.info(f"TCP server {srv.name} started on {srv.host}:{srv.port}")
 
     def _stop_server(self, srv: ServerConfig):
         ms = self._running_servers.pop(id(srv), None)
         if ms:
-            ms.stop()
-            ms.join(timeout=2.0)
-
+            ms.stop(); ms.join(timeout=2.0)
         srv.running = False
-
         srv_item = self._find_server_item(srv)
         if srv_item:
             self._update_server_item_color(srv_item, srv)
-
         self._update_controls()
         logger.info(f"TCP server {srv.name} stopped")
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # Start All / Stop All
-    # ══════════════════════════════════════════════════════════════════════════
-
     def _start_all_servers(self):
-        """Start every configured TCP server that is not already running."""
         for srv in self.project.servers:
             if not srv.running:
                 self._start_server(srv)
 
     def _stop_all_servers(self):
-        """Stop every running TCP server."""
         for srv in list(self.project.servers):
             if srv.running:
                 self._stop_server(srv)
@@ -577,29 +787,29 @@ class MainWindow(QMainWindow):
     # ══════════════════════════════════════════════════════════════════════════
 
     def _populate_slave_registers(self, ms, slave: SlaveConfig, zero_based: bool):
-        """Push all register data from a SlaveConfig into the live ModbusServer."""
-        for group, items in slave.data.items():
+        """Push all non-default register data from a SlaveConfig into the live server."""
+        for group in ["Coils", "Discrete Inputs", "Holding Registers", "Input Registers"]:
             reg_type = _map_group_to_type(group)
 
-            if group in BOOL_TYPES:
-                values = [1 if item["val"] == "True" else 0 for item in items]
-                ms.set_initial_values(slave.slave_id, reg_type, values)
+            if group in BOOL_GROUPS:
+                # Only push non-default (True) rows
+                for row, rd in slave.iter_non_default_rows(group):
+                    if rd["val"] == "True":
+                        ms.update_register(slave.slave_id, reg_type, row, 1)
             else:
-                flat = [0] * NUM_ROWS
+                # Push all non-default register rows
                 skip_until = -1
-                for row, item in enumerate(items):
+                for row in sorted(slave.data[group].keys()):
                     if row <= skip_until:
                         continue
-                    if item["slave_of"] is not None:
+                    rd = slave.get_row(group, row)
+                    if rd["slave_of"] is not None:
                         continue
-                    dtype   = _dtype_from_str(item["type"])
+                    dtype   = _dtype_from_str(rd["type"])
                     reg_cnt = get_register_count(dtype)
-                    raw     = DataConverter.to_registers(item["val"], dtype)
-                    for offset, word in enumerate(raw):
-                        if row + offset < NUM_ROWS:
-                            flat[row + offset] = word
+                    raw     = DataConverter.to_registers(rd["val"], dtype)
+                    ms.update_registers(slave.slave_id, reg_type, row, raw)
                     skip_until = row + reg_cnt - 1
-                ms.set_initial_values(slave.slave_id, reg_type, flat)
 
     # ══════════════════════════════════════════════════════════════════════════
     # Zero-based addressing
@@ -614,203 +824,93 @@ class MainWindow(QMainWindow):
         ms = self._running_servers.get(id(srv))
         if ms:
             ms.set_zero_based(zero)
-        self._load_table_data()
+        # Refresh address column by rebuilding the model
+        if self._active_slave is not None:
+            self._load_table_model()
 
     # ══════════════════════════════════════════════════════════════════════════
     # Register group switching
     # ══════════════════════════════════════════════════════════════════════════
 
     def _switch_register_group(self, group: str):
-        self._save_current_table_to_model()
         self._current_group = group
-        self._load_table_data()
+        self._load_table_model()
 
     # ══════════════════════════════════════════════════════════════════════════
-    # Table population
+    # Table model
     # ══════════════════════════════════════════════════════════════════════════
 
-    def _get_display_address(self, addr: int) -> int:
-        srv = self._active_server
-        is_zero = srv.zero_based if srv else False
-        offsets = {
-            "Coils":             0      if is_zero else 1,
-            "Discrete Inputs":   10000  if is_zero else 10001,
-            "Holding Registers": 40000  if is_zero else 40001,
-            "Input Registers":   30000  if is_zero else 30001,
-        }
-        return offsets[self._current_group] + addr
-
-    def _load_table_data(self):
+    def _load_table_model(self):
         if self._active_slave is None:
             return
 
+        slave  = self._active_slave
+        group  = self._current_group
+        srv    = self._active_server
+        offset = _group_addr_offset(group, srv.zero_based if srv else False)
+        is_bool = group in BOOL_GROUPS
+
+        model = RegisterTableModel(slave, group, offset)
+        model.dataChanged.connect(self._on_model_data_changed)
+        self._reg_model = model
+
+        delegate = RegisterDelegate(
+            is_bool=is_bool,
+            on_dtype_changed=self._on_dtype_changed_from_delegate,
+        )
+
+        self.table.setModel(model)
+        self.table.setItemDelegate(delegate)
+        # Resize rows to a compact height
+        self.table.verticalHeader().setDefaultSectionSize(22)
+
+    def _on_model_data_changed(self, top_left: QModelIndex,
+                               bottom_right: QModelIndex, roles):
+        """Called whenever the model's data changes — push to live server."""
         slave = self._active_slave
-        items = slave.data[self._current_group]
-        row_count = len(items)
-
-        # Resize table to match actual row count (65536)
-        self.table.setRowCount(row_count)
-        self.table.blockSignals(True)
-
-        for i in range(row_count):
-            item = items[i]
-
-            addr_item = QTableWidgetItem(str(self._get_display_address(item["addr"])))
-            addr_item.setFlags(addr_item.flags() & ~Qt.ItemIsEditable)
-            self.table.setItem(i, 0, addr_item)
-
-            for col in (1, 2):
-                old = self.table.cellWidget(i, col)
-                if old:
-                    old.deleteLater()
-                self.table.setCellWidget(i, col, None)
-                self.table.setItem(i, col, None)
-
-            if self._current_group in BOOL_TYPES:
-                combo = QComboBox()
-                combo.addItems(["Boolean"])
-                combo.setEnabled(False)
-                self.table.setCellWidget(i, 1, combo)
-
-                val = item["val"] == "True"
-                cb = QCheckBox()
-                cb.setChecked(val)
-                cb.stateChanged.connect(
-                    lambda state, row=i, grp=self._current_group,
-                           slv=slave, srv=self._active_server:
-                        self._update_bool_val(row, state, grp, slv, srv)
-                )
-                self.table.setCellWidget(i, 2, cb)
-
-            else:
-                is_slave_row = item["slave_of"] is not None
-
-                combo = QComboBox()
-                combo.addItems(ALL_DTYPES)
-                combo.setCurrentText(item["type"])
-                combo.setEnabled(not is_slave_row)
-                if is_slave_row:
-                    combo.setStyleSheet("background-color: #dcdcdc;")
-                else:
-                    combo.currentTextChanged.connect(
-                        lambda text, row=i, grp=self._current_group,
-                               slv=slave, srv=self._active_server:
-                            self._on_dtype_changed(row, text, grp, slv, srv)
-                    )
-                self.table.setCellWidget(i, 1, combo)
-
-                if is_slave_row:
-                    placeholder = QLineEdit("—")
-                    placeholder.setEnabled(False)
-                    placeholder.setStyleSheet("background-color: #dcdcdc; color: #888;")
-                    self.table.setCellWidget(i, 2, placeholder)
-                else:
-                    val_edit = QLineEdit(item["val"])
-                    val_edit.textChanged.connect(
-                        lambda text, row=i, grp=self._current_group,
-                               slv=slave, srv=self._active_server:
-                            self._update_reg_val(row, text, grp, slv, srv)
-                    )
-                    self.table.setCellWidget(i, 2, val_edit)
-
-        self.table.blockSignals(False)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # Data-type change handler
-    # ══════════════════════════════════════════════════════════════════════════
-
-    def _on_dtype_changed(self, master_row: int, new_type_str: str,
-                          group: str, slave: SlaveConfig, srv: ServerConfig):
-        if slave is not self._active_slave or group != self._current_group:
+        srv   = self._active_server
+        if slave is None or srv is None:
             return
-
-        dtype     = _dtype_from_str(new_type_str)
-        reg_count = get_register_count(dtype)
-
-        slave.data[group][master_row]["type"] = new_type_str
-
-        # Free previously owned slave rows
-        for r in range(NUM_ROWS):
-            if slave.data[group][r]["slave_of"] == master_row:
-                slave.data[group][r]["slave_of"] = None
-                slave.data[group][r]["type"]     = ModbusDataType.UINT16.value
-                slave.data[group][r]["val"]      = "0"
-
-        # Claim new slave rows
-        for offset in range(1, reg_count):
-            slave_row = master_row + offset
-            if slave_row >= NUM_ROWS:
-                break
-            if slave.data[group][slave_row]["slave_of"] is None:
-                has_own_slaves = any(
-                    slave.data[group][r]["slave_of"] == slave_row
-                    for r in range(NUM_ROWS)
-                )
-                if not has_own_slaves:
-                    slave.data[group][slave_row]["slave_of"] = master_row
-
-        self._load_table_data()
-
-        val_str = slave.data[group][master_row]["val"]
-        self._push_reg_to_server(group, master_row, val_str, new_type_str, slave, srv)
-
-    # ══════════════════════════════════════════════════════════════════════════
-    # Value-update handlers
-    # ══════════════════════════════════════════════════════════════════════════
-
-    def _update_bool_val(self, row: int, state: int, group: str,
-                         slave: SlaveConfig, srv: ServerConfig):
-        val = (state == Qt.Checked.value) or (state == 2)
-        slave.data[group][row]["val"] = str(val)
-        ms = self._running_servers.get(id(srv))
-        if ms:
-            reg_type = _map_group_to_type(group)
-            ms.update_register(slave.slave_id, reg_type, row, int(val))
-
-    def _update_reg_val(self, row: int, text: str, group: str,
-                        slave: SlaveConfig, srv: ServerConfig):
-        slave.data[group][row]["val"] = text
-        dtype_str = slave.data[group][row]["type"]
-        self._push_reg_to_server(group, row, text, dtype_str, slave, srv)
-
-    def _push_reg_to_server(self, group: str, row: int, val_str: str,
-                             dtype_str: str, slave: SlaveConfig, srv: ServerConfig):
         ms = self._running_servers.get(id(srv))
         if ms is None:
             return
+
+        group    = self._current_group
         reg_type = _map_group_to_type(group)
-        dtype    = _dtype_from_str(dtype_str)
-        try:
-            raw_regs = DataConverter.to_registers(val_str, dtype)
-            if len(raw_regs) == 1:
-                ms.update_register(slave.slave_id, reg_type, row, raw_regs[0])
+
+        for row in range(top_left.row(), bottom_right.row() + 1):
+            rd = slave.get_row(group, row)
+            if group in BOOL_GROUPS:
+                val = 1 if rd["val"] == "True" else 0
+                ms.update_register(slave.slave_id, reg_type, row, val)
             else:
-                ms.update_registers(slave.slave_id, reg_type, row, raw_regs)
-        except Exception as e:
-            logger.debug(f"_push_reg_to_server: {e}")
+                if rd["slave_of"] is not None:
+                    continue
+                dtype = _dtype_from_str(rd["type"])
+                try:
+                    raw = DataConverter.to_registers(rd["val"], dtype)
+                    ms.update_registers(slave.slave_id, reg_type, row, raw)
+                except Exception as e:
+                    logger.debug(f"_on_model_data_changed row={row}: {e}")
 
-    # ══════════════════════════════════════════════════════════════════════════
-    # Save current table → model
-    # ══════════════════════════════════════════════════════════════════════════
-
-    def _save_current_table_to_model(self):
+    def _on_dtype_changed_from_delegate(self, row: int, new_type_str: str):
+        """Called after a dtype change — push the master row's value to the server."""
         slave = self._active_slave
-        if slave is None:
+        srv   = self._active_server
+        if slave is None or srv is None:
             return
-        grp = self._current_group
-        for i in range(self.table.rowCount()):
-            if grp in BOOL_TYPES:
-                cb = self.table.cellWidget(i, 2)
-                if isinstance(cb, QCheckBox):
-                    slave.data[grp][i]["val"] = str(cb.isChecked())
-            else:
-                if slave.data[grp][i]["slave_of"] is None:
-                    le = self.table.cellWidget(i, 2)
-                    if isinstance(le, QLineEdit):
-                        slave.data[grp][i]["val"] = le.text()
-                    combo = self.table.cellWidget(i, 1)
-                    if isinstance(combo, QComboBox):
-                        slave.data[grp][i]["type"] = combo.currentText()
+        ms = self._running_servers.get(id(srv))
+        if ms is None:
+            return
+        group    = self._current_group
+        reg_type = _map_group_to_type(group)
+        rd       = slave.get_row(group, row)
+        dtype    = _dtype_from_str(new_type_str)
+        try:
+            raw = DataConverter.to_registers(rd["val"], dtype)
+            ms.update_registers(slave.slave_id, reg_type, row, raw)
+        except Exception as e:
+            logger.debug(f"_on_dtype_changed_from_delegate row={row}: {e}")
 
     # ══════════════════════════════════════════════════════════════════════════
     # Project save / load
@@ -820,66 +920,51 @@ class MainWindow(QMainWindow):
         for srv in list(self.project.servers):
             if srv.running:
                 self._stop_server(srv)
-
         self.project = Project()
-        self._active_server = None
-        self._active_slave  = None
-        self.table.setEnabled(False)
-        self._group_combo.setEnabled(False)
+        self._active_server = None; self._active_slave = None
+        self._reg_model = None; self.table.setModel(None)
+        self.table.setEnabled(False); self._group_combo.setEnabled(False)
         self._context_label.setText(
-            "<i>Select a Modbus Server in the tree to edit its registers.</i>"
-        )
+            "<i>Select a Modbus Server in the tree to edit its registers.</i>")
         self._update_controls()
         self._create_default_project()
 
     def _save_project(self):
-        self._save_current_table_to_model()
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Project", "", "JSON Files (*.json)"
-        )
+            self, "Save Project", "", "JSON Files (*.json)")
         if path:
             self.project.save_to_file(path)
 
     def _load_project(self):
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load Project", "", "JSON Files (*.json)"
-        )
+            self, "Load Project", "", "JSON Files (*.json)")
         if not path:
             return
-
         for srv in list(self.project.servers):
             if srv.running:
                 self._stop_server(srv)
-
         try:
             self.project = Project.load_from_file(path)
         except Exception as e:
-            QMessageBox.critical(self, "Load Error", str(e))
-            return
-
-        self._active_server = None
-        self._active_slave  = None
+            QMessageBox.critical(self, "Load Error", str(e)); return
+        self._active_server = None; self._active_slave = None
+        self._reg_model = None; self.table.setModel(None)
         self._running_servers.clear()
-        self._rebuild_tree()
-        self._update_controls()
-        self.table.setEnabled(False)
-        self._group_combo.setEnabled(False)
+        self._rebuild_tree(); self._update_controls()
+        self.table.setEnabled(False); self._group_combo.setEnabled(False)
         self._context_label.setText(
-            "<i>Select a Modbus Server in the tree to edit its registers.</i>"
-        )
+            "<i>Select a Modbus Server in the tree to edit its registers.</i>")
 
     # ══════════════════════════════════════════════════════════════════════════
     # Per-server save / load
     # ══════════════════════════════════════════════════════════════════════════
 
     def _save_server_config(self, srv: ServerConfig | None = None):
-        self._save_current_table_to_model()
         srv = srv or self._active_server
         if srv is None:
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save Server Config", f"{srv.name}.json", "JSON Files (*.json)"
-        )
+            self, "Save Server Config", f"{srv.name}.json", "JSON Files (*.json)")
         if path:
             srv.save_to_file(path)
 
@@ -888,60 +973,47 @@ class MainWindow(QMainWindow):
         if srv is None:
             return
         if srv.running:
-            QMessageBox.information(
-                self, "Server Running",
-                "Stop the TCP server before loading a new configuration."
-            )
+            QMessageBox.information(self, "Server Running",
+                "Stop the TCP server before loading a new configuration.")
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load Server Config", "", "JSON Files (*.json)"
-        )
+            self, "Load Server Config", "", "JSON Files (*.json)")
         if not path:
             return
         try:
             new_srv = ServerConfig.load_from_file(path)
         except Exception as e:
-            QMessageBox.critical(self, "Load Error", str(e))
-            return
-
-        srv.name       = new_srv.name
-        srv.host       = new_srv.host
-        srv.port       = new_srv.port
-        srv.zero_based = new_srv.zero_based
-        srv.slaves     = new_srv.slaves
-
+            QMessageBox.critical(self, "Load Error", str(e)); return
+        srv.name = new_srv.name; srv.host = new_srv.host
+        srv.port = new_srv.port; srv.zero_based = new_srv.zero_based
+        srv.slaves = new_srv.slaves
         if self._active_server is srv:
-            self._active_slave = None
-            self.table.setEnabled(False)
+            self._active_slave = None; self._reg_model = None
+            self.table.setModel(None); self.table.setEnabled(False)
             self._group_combo.setEnabled(False)
-
-        self._rebuild_tree()
-        self._update_controls()
+        self._rebuild_tree(); self._update_controls()
 
     # ══════════════════════════════════════════════════════════════════════════
     # Per-slave CSV save / load
     # ══════════════════════════════════════════════════════════════════════════
 
     def _save_slave_csv(self):
-        self._save_current_table_to_model()
         slave = self._active_slave
         if slave is None:
             return
         path, _ = QFileDialog.getSaveFileName(
             self, "Save Modbus Server Config",
-            f"modbus_server_{slave.slave_id}.csv",
-            "CSV Files (*.csv)"
-        )
+            f"modbus_server_{slave.slave_id}.csv", "CSV Files (*.csv)")
         if not path:
             return
         with open(path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow(["Group", "Address", "Data Type", "Value", "SlaveOf"])
-            for group, items in slave.data.items():
-                for item in items:
+            for group in ["Coils", "Discrete Inputs", "Holding Registers", "Input Registers"]:
+                for row, rd in sorted(slave.data[group].items()):
                     writer.writerow([
-                        group, item["addr"], item["type"], item["val"],
-                        "" if item["slave_of"] is None else item["slave_of"],
+                        group, rd["addr"], rd["type"], rd["val"],
+                        "" if rd["slave_of"] is None else rd["slave_of"],
                     ])
 
     def _load_slave_csv(self):
@@ -949,8 +1021,7 @@ class MainWindow(QMainWindow):
         if slave is None:
             return
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load Modbus Server Config", "", "CSV Files (*.csv)"
-        )
+            self, "Load Modbus Server Config", "", "CSV Files (*.csv)")
         if not path:
             return
         try:
@@ -958,48 +1029,38 @@ class MainWindow(QMainWindow):
                 reader = csv.reader(f)
                 header = next(reader)
                 has_slave_col = "SlaveOf" in header
-                for row in reader:
-                    if len(row) < 4:
+                for row_data in reader:
+                    if len(row_data) < 4:
                         continue
-                    group, addr_str, dtype, val = row[0], row[1], row[2], row[3]
+                    group, addr_str, dtype, val = (
+                        row_data[0], row_data[1], row_data[2], row_data[3])
                     slave_of = None
-                    if has_slave_col and len(row) >= 5 and row[4].strip():
+                    if has_slave_col and len(row_data) >= 5 and row_data[4].strip():
                         try:
-                            slave_of = int(row[4])
+                            slave_of = int(row_data[4])
                         except ValueError:
                             pass
                     if group not in slave.data:
                         continue
-                    for item in slave.data[group]:
-                        if str(item["addr"]) == addr_str:
-                            item["type"]     = dtype
-                            item["val"]      = val
-                            item["slave_of"] = slave_of
-                            break
+                    try:
+                        row_idx = int(addr_str)
+                    except ValueError:
+                        continue
+                    rd = {"addr": row_idx, "type": dtype,
+                          "val": val, "slave_of": slave_of}
+                    slave.set_row(group, row_idx, rd)
         except Exception as e:
-            QMessageBox.critical(self, "Load Error", str(e))
-            return
+            QMessageBox.critical(self, "Load Error", str(e)); return
 
-        self._load_table_data()
+        if self._active_slave is slave:
+            self._load_table_model()
 
     # ══════════════════════════════════════════════════════════════════════════
     # Utility
     # ══════════════════════════════════════════════════════════════════════════
 
     def closeEvent(self, event):
-        """Stop all running servers on close."""
         for srv in self.project.servers:
             if srv.running:
                 self._stop_server(srv)
         event.accept()
-
-
-# ── Module-level helpers ───────────────────────────────────────────────────────
-
-def _map_group_to_type(group: str) -> str:
-    return {
-        "Coils":             "coils",
-        "Discrete Inputs":   "discrete_inputs",
-        "Holding Registers": "holding_registers",
-        "Input Registers":   "input_registers",
-    }[group]

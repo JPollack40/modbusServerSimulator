@@ -351,6 +351,8 @@ imported by:
  &#8226;   <a href="#PySide6.QtNetwork">PySide6.QtNetwork</a>
  &#8226;   <a href="#PySide6.QtWidgets">PySide6.QtWidgets</a>
  &#8226;   <a href="#gui.main_window">gui.main_window</a>
+ &#8226;   <a href="#gui.server_dialog">gui.server_dialog</a>
+ &#8226;   <a href="#gui.slave_dialog">gui.slave_dialog</a>
  &#8226;   <a href="#src.gui.main_window">src.gui.main_window</a>
 
   </div>
@@ -427,6 +429,8 @@ imports:
 imported by:
     <a href="#PySide6.QtWidgets">PySide6.QtWidgets</a>
  &#8226;   <a href="#gui.main_window">gui.main_window</a>
+ &#8226;   <a href="#gui.server_dialog">gui.server_dialog</a>
+ &#8226;   <a href="#gui.slave_dialog">gui.slave_dialog</a>
  &#8226;   <a href="#main.py">main.py</a>
  &#8226;   <a href="#src.gui.main_window">src.gui.main_window</a>
 
@@ -477,9 +481,13 @@ imported by:
     <a href="#PySide6.support">PySide6.support</a>
  &#8226;   <a href="#PySide6.support.deprecated">PySide6.support.deprecated</a>
  &#8226;   <a href="#codeop">codeop</a>
+ &#8226;   <a href="#gui.main_window">gui.main_window</a>
+ &#8226;   <a href="#gui.server_dialog">gui.server_dialog</a>
+ &#8226;   <a href="#gui.slave_dialog">gui.slave_dialog</a>
  &#8226;   <a href="#importlib.metadata">importlib.metadata</a>
  &#8226;   <a href="#importlib.metadata._meta">importlib.metadata._meta</a>
  &#8226;   <a href="#importlib.resources.readers">importlib.resources.readers</a>
+ &#8226;   <a href="#models.device_config">models.device_config</a>
  &#8226;   <a href="#pymodbus.datastore.context">pymodbus.datastore.context</a>
  &#8226;   <a href="#pymodbus.datastore.simulator">pymodbus.datastore.simulator</a>
  &#8226;   <a href="#pymodbus.datastore.store">pymodbus.datastore.store</a>
@@ -507,6 +515,7 @@ imported by:
  &#8226;   <a href="#pymodbus.transport.transport">pymodbus.transport.transport</a>
  &#8226;   <a href="#pymodbus.utilities">pymodbus.utilities</a>
  &#8226;   <a href="#shiboken6.Shiboken">shiboken6.Shiboken</a>
+ &#8226;   <a href="#src.gui.main_window">src.gui.main_window</a>
 
   </div>
 
@@ -3528,6 +3537,7 @@ imported by:
  &#8226;   <a href="#email.generator">email.generator</a>
  &#8226;   <a href="#gettext">gettext</a>
  &#8226;   <a href="#http.cookiejar">http.cookiejar</a>
+ &#8226;   <a href="#models.device_config">models.device_config</a>
  &#8226;   <a href="#tarfile">tarfile</a>
  &#8226;   <a href="#weakref">weakref</a>
 
@@ -3664,6 +3674,7 @@ imports:
 imported by:
     <a href="#_colorize">_colorize</a>
  &#8226;   <a href="#asyncio.graph">asyncio.graph</a>
+ &#8226;   <a href="#models.device_config">models.device_config</a>
  &#8226;   <a href="#pprint">pprint</a>
  &#8226;   <a href="#pymodbus.datastore.simulator">pymodbus.datastore.simulator</a>
  &#8226;   <a href="#pymodbus.pdu.file_message">pymodbus.pdu.file_message</a>
@@ -7098,6 +7109,8 @@ imported by:
 <span class="moduletype">Package</span>  <div class="import">
 imported by:
     <a href="#gui.main_window">gui.main_window</a>
+ &#8226;   <a href="#gui.server_dialog">gui.server_dialog</a>
+ &#8226;   <a href="#gui.slave_dialog">gui.slave_dialog</a>
  &#8226;   <a href="#main.py">main.py</a>
 
   </div>
@@ -7112,18 +7125,64 @@ imports:
     <a href="#PySide6.QtCore">PySide6.QtCore</a>
  &#8226;   <a href="#PySide6.QtGui">PySide6.QtGui</a>
  &#8226;   <a href="#PySide6.QtWidgets">PySide6.QtWidgets</a>
+ &#8226;   <a href="#__future__">__future__</a>
  &#8226;   <a href="#csv">csv</a>
  &#8226;   <a href="#gui">gui</a>
+ &#8226;   <a href="#gui.server_dialog">gui.server_dialog</a>
+ &#8226;   <a href="#gui.slave_dialog">gui.slave_dialog</a>
  &#8226;   <a href="#logging">logging</a>
  &#8226;   <a href="#modbus.server_wrapper">modbus.server_wrapper</a>
+ &#8226;   <a href="#models.device_config">models.device_config</a>
  &#8226;   <a href="#models.register_data">models.register_data</a>
- &#8226;   <a href="#psutil">psutil</a>
- &#8226;   <a href="#socket">socket</a>
 
   </div>
   <div class="import">
 imported by:
     <a href="#main.py">main.py</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="gui.server_dialog"></a>
+  <a target="code" href="///c:/Users/jpollack/Documents/vsCodeProjects/modbusServerSimulator/modbusServerSimulator/src/gui/server_dialog.py" type="text/plain"><tt>gui.server_dialog</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#PySide6.QtCore">PySide6.QtCore</a>
+ &#8226;   <a href="#PySide6.QtWidgets">PySide6.QtWidgets</a>
+ &#8226;   <a href="#__future__">__future__</a>
+ &#8226;   <a href="#gui">gui</a>
+ &#8226;   <a href="#models.device_config">models.device_config</a>
+ &#8226;   <a href="#psutil">psutil</a>
+ &#8226;   <a href="#socket">socket</a>
+ &#8226;   <a href="#subprocess">subprocess</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#gui.main_window">gui.main_window</a>
+ &#8226;   <a href="#src.gui.main_window">src.gui.main_window</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="gui.slave_dialog"></a>
+  <a target="code" href="///c:/Users/jpollack/Documents/vsCodeProjects/modbusServerSimulator/modbusServerSimulator/src/gui/slave_dialog.py" type="text/plain"><tt>gui.slave_dialog</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#PySide6.QtCore">PySide6.QtCore</a>
+ &#8226;   <a href="#PySide6.QtWidgets">PySide6.QtWidgets</a>
+ &#8226;   <a href="#__future__">__future__</a>
+ &#8226;   <a href="#gui">gui</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#gui.main_window">gui.main_window</a>
+ &#8226;   <a href="#src.gui.main_window">src.gui.main_window</a>
 
   </div>
 
@@ -8022,6 +8081,7 @@ imported by:
  &#8226;   <a href="#json.decoder">json.decoder</a>
  &#8226;   <a href="#json.encoder">json.encoder</a>
  &#8226;   <a href="#json.scanner">json.scanner</a>
+ &#8226;   <a href="#models.device_config">models.device_config</a>
  &#8226;   <a href="#multiprocessing.resource_tracker">multiprocessing.resource_tracker</a>
  &#8226;   <a href="#pymodbus.server.simulator.http_server">pymodbus.server.simulator.http_server</a>
 
@@ -8324,7 +8384,32 @@ imported by:
 <span class="moduletype">Package</span>  <div class="import">
 imported by:
     <a href="#main.py">main.py</a>
+ &#8226;   <a href="#models.device_config">models.device_config</a>
  &#8226;   <a href="#models.register_data">models.register_data</a>
+
+  </div>
+
+</div>
+
+<div class="node">
+  <a name="models.device_config"></a>
+  <a target="code" href="///c:/Users/jpollack/Documents/vsCodeProjects/modbusServerSimulator/modbusServerSimulator/src/models/device_config.py" type="text/plain"><tt>models.device_config</tt></a>
+<span class="moduletype">SourceModule</span>  <div class="import">
+imports:
+    <a href="#__future__">__future__</a>
+ &#8226;   <a href="#copy">copy</a>
+ &#8226;   <a href="#dataclasses">dataclasses</a>
+ &#8226;   <a href="#json">json</a>
+ &#8226;   <a href="#models">models</a>
+ &#8226;   <a href="#models.register_data">models.register_data</a>
+ &#8226;   <a href="#typing">typing</a>
+
+  </div>
+  <div class="import">
+imported by:
+    <a href="#gui.main_window">gui.main_window</a>
+ &#8226;   <a href="#gui.server_dialog">gui.server_dialog</a>
+ &#8226;   <a href="#src.gui.main_window">src.gui.main_window</a>
 
   </div>
 
@@ -8344,6 +8429,7 @@ imports:
   <div class="import">
 imported by:
     <a href="#gui.main_window">gui.main_window</a>
+ &#8226;   <a href="#models.device_config">models.device_config</a>
  &#8226;   <a href="#src.gui.main_window">src.gui.main_window</a>
 
   </div>
@@ -9655,14 +9741,13 @@ imports:
   </div>
   <div class="import">
 imported by:
-    <a href="#gui.main_window">gui.main_window</a>
+    <a href="#gui.server_dialog">gui.server_dialog</a>
  &#8226;   <a href="#main.py">main.py</a>
  &#8226;   <a href="#psutil">psutil</a>
  &#8226;   <a href="#psutil._common">psutil._common</a>
  &#8226;   <a href="#psutil._ntuples">psutil._ntuples</a>
  &#8226;   <a href="#psutil._psutil_windows">psutil._psutil_windows</a>
  &#8226;   <a href="#psutil._pswindows">psutil._pswindows</a>
- &#8226;   <a href="#src.gui.main_window">src.gui.main_window</a>
 
   </div>
 
@@ -11308,7 +11393,7 @@ imported by:
  &#8226;   <a href="#asyncio.windows_events">asyncio.windows_events</a>
  &#8226;   <a href="#email.utils">email.utils</a>
  &#8226;   <a href="#ftplib">ftplib</a>
- &#8226;   <a href="#gui.main_window">gui.main_window</a>
+ &#8226;   <a href="#gui.server_dialog">gui.server_dialog</a>
  &#8226;   <a href="#http.client">http.client</a>
  &#8226;   <a href="#multiprocessing.connection">multiprocessing.connection</a>
  &#8226;   <a href="#multiprocessing.forkserver">multiprocessing.forkserver</a>
@@ -11316,7 +11401,6 @@ imported by:
  &#8226;   <a href="#multiprocessing.resource_sharer">multiprocessing.resource_sharer</a>
  &#8226;   <a href="#psutil">psutil</a>
  &#8226;   <a href="#psutil._common">psutil._common</a>
- &#8226;   <a href="#src.gui.main_window">src.gui.main_window</a>
  &#8226;   <a href="#ssl">ssl</a>
  &#8226;   <a href="#urllib.request">urllib.request</a>
 
@@ -11359,12 +11443,14 @@ imports:
     <a href="#PySide6.QtCore">PySide6.QtCore</a>
  &#8226;   <a href="#PySide6.QtGui">PySide6.QtGui</a>
  &#8226;   <a href="#PySide6.QtWidgets">PySide6.QtWidgets</a>
+ &#8226;   <a href="#__future__">__future__</a>
  &#8226;   <a href="#csv">csv</a>
+ &#8226;   <a href="#gui.server_dialog">gui.server_dialog</a>
+ &#8226;   <a href="#gui.slave_dialog">gui.slave_dialog</a>
  &#8226;   <a href="#logging">logging</a>
  &#8226;   <a href="#modbus.server_wrapper">modbus.server_wrapper</a>
+ &#8226;   <a href="#models.device_config">models.device_config</a>
  &#8226;   <a href="#models.register_data">models.register_data</a>
- &#8226;   <a href="#psutil">psutil</a>
- &#8226;   <a href="#socket">socket</a>
  &#8226;   <a href="#src.gui">src.gui</a>
 
   </div>
@@ -11633,6 +11719,7 @@ imported by:
  &#8226;   <a href="#asyncio.subprocess">asyncio.subprocess</a>
  &#8226;   <a href="#asyncio.unix_events">asyncio.unix_events</a>
  &#8226;   <a href="#asyncio.windows_utils">asyncio.windows_utils</a>
+ &#8226;   <a href="#gui.server_dialog">gui.server_dialog</a>
  &#8226;   <a href="#multiprocessing.popen_spawn_win32">multiprocessing.popen_spawn_win32</a>
  &#8226;   <a href="#multiprocessing.util">multiprocessing.util</a>
  &#8226;   <a href="#os">os</a>
@@ -12209,6 +12296,7 @@ imported by:
  &#8226;   <a href="#importlib.metadata._meta">importlib.metadata._meta</a>
  &#8226;   <a href="#importlib.resources._common">importlib.resources._common</a>
  &#8226;   <a href="#importlib.resources.abc">importlib.resources.abc</a>
+ &#8226;   <a href="#models.device_config">models.device_config</a>
  &#8226;   <a href="#models.register_data">models.register_data</a>
  &#8226;   <a href="#pymodbus.datastore.simulator">pymodbus.datastore.simulator</a>
  &#8226;   <a href="#pymodbus.datastore.store">pymodbus.datastore.store</a>

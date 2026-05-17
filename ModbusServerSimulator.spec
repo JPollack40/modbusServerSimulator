@@ -4,10 +4,27 @@ block_cipher = None
 
 a = Analysis(
     ['src/main.py'],
-    pathex=['.'], # Add current directory to path
+    pathex=['.', 'src'],
     binaries=[],
     datas=[],
-    hiddenimports=['PySide6', 'pymodbus', 'psutil', 'modbus', 'gui', 'models'], # Add project modules
+    hiddenimports=[
+        'PySide6',
+        'pymodbus',
+        'psutil',
+        'modbus',
+        'modbus.server_wrapper',
+        'modbus.simulator_service',
+        'gui',
+        'gui.main_window',
+        'gui.register_table',
+        'gui.server_dialog',
+        'gui.slave_dialog',
+        'models',
+        'models.device_config',
+        'models.register_data',
+        'utils',
+        'utils.decorators',
+    ],
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
@@ -27,13 +44,13 @@ exe = EXE(
     a.datas,
     [],
     name='ModbusServerSimulator',
-    debug=True, # Enable debug for now
+    debug=False,
     bootloader_ignore_signals=False,
     strip=False,
     upx=True,
     upx_exclude=[],
     runtime_tmpdir=None,
-    console=True, # Set to True to see errors if it crashes immediately
+    console=False,
     disable_windowed_traceback=False,
     argv_emulation=False,
     target_arch=None,

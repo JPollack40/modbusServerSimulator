@@ -1,0 +1,143 @@
+# Cline Rules — PHS Modbus Server Simulator
+# ============================================================
+# This file is read by Cline at the start of every session.
+# Keep it up to date as the project evolves.
+# ============================================================
+
+## Project Overview
+A PySide6 desktop application that simulates one or more Modbus TCP servers,
+each hosting one or more Modbus slave devices (unit IDs 1–247).  It is used
+to generate realistic Modbus traffic for testing a separate Modbus scanning /
+diagnostic tool.
+
+Key capabilities:
+- Multiple TCP servers on different IP:port combinations
+- Multiple Modbus slave IDs per server (including intentional duplicates to
+  simulate RS-485 address conflicts)
+- Editable register tables for all four Modbus data groups
+  (Coils, Discrete Inputs, Holding Registers, Input Registers)
+- Project save/load (JSON), per-server save/load (JSON), per-slave CSV export
+- Single-click / keyboard-navigable register tables (Excel-like UX)
+
+## Repository Layout
+```
+modbusServerSimulator/
+├── src/
+│   ├── main.py                    # Entry point — creates QApplication + MainWindow
+│   ├── gui/
+│   │   ├── main_window.py         # Main window — UI wiring only, no Modbus logic
+│   │   ├── register_table.py      # RegisterTableModel / RegisterDelegate / RegisterTableView
+│   │   ├── server_dialog.py       # Add/edit TCP server dialog (no IP-alias feature)
+│   │   └── slave_dialog.py        # Add Modbus slave dialog (includes conflict checkbox)
+│   ├── modbus/
+│   │   ├── server_wrapper.py      # SlaveDataBlocks, ConflictingDataBlock, ModbusServer
+│   │   └── simulator_service.py   # SimulatorService facade (owns all server threads)
+│   ├── models/
+│   │   ├── device_config.py       # Project, ServerConfig, SlaveConfig dataclasses + serialisation
+│   │   └── register_data.py       # ModbusDataType enum, DataConverter, get_register_count
+│   └── utils/
+│       ├── __init__.py
+│       └── decorators.py          # @log_errors, @log_errors_silent decorators
+├── ModbusServerSimulator.spec     # PyInstaller spec (single-file exe, no console)
+├── requirements.txt
+└── dist/
+    └── ModbusServerSimulator.exe  # Built executable — rebuild after every change cycle
+```
+
+## Technology Stack
+- **Python 3.14** (system install at C:\Program Files\Python314)
+- **PySide6** — Qt6 GUI bindings
+- **pymodbus** — Modbus TCP server implementation
+- **psutil** — NIC enumeration for server bind-address picker
+- **PyInstaller 6.20** — single-file Windows executable
+
+## Design Principles (Always Enforce)
+Follow the full set of principles in the original system prompt:
+- SRP, Separation of Concerns, DRY, KISS, YAGNI
+- Composition over Inheritance, Dependency Inversion
+- Patterns: Factory, Adapter, Command, Observer, Decorator, Facade, State, Iterator
+- Pythonic: EAFP, duck typing, context managers, type hints, explicit over implicit
+
+**Critical architecture rules:**
+1. `main_window.py` must NEVER import `ModbusServer` directly — always go through `SimulatorService`.
+2. `RegisterTableModel` owns no server knowledge — it only reads/writes `SlaveConfig` data.
+3. Protocol parsing must stay isolated in `modbus/` — never leak into `gui/` or `models/`.
+4. `device_config.py` is the single source of truth for all serialisation logic.
+
+## Build Instructions
+After every change cycle, rebuild the executable:
+```
+cd c:\Users\jpollack\Documents\vsCodeProjects\modbusServerSimulator\modbusServerSimulator
+pyinstaller --clean ModbusServerSimulator.spec
+```
+Output: `dist/ModbusServerSimulator.exe`
+Build takes ~3–5 minutes (PySide6 hooks are slow on first clean build).
+Do NOT attempt Git commits or pushes — the user handles those manually.
+
+## Key Implementation Details
+
+### Project Save / Load (Reliability)
+- `Project.load_from_file()` validates JSON structure before constructing objects.
+- `SlaveConfig.from_dict()` copies entry dicts before mutating, validates all keys,
+  and skips malformed entries with warnings rather than aborting.
+- `_rebuild_tree()` in `main_window.py` calls `self.tree.setCurrentItem(None)` while
+  signals are still blocked (before `blockSignals(False)`).  This is CRITICAL — without
+  it, `_auto_select_first_slave()` may call `setCurrentItem(root.child(0))` on an item
+  that Qt already auto-selected, causing `currentItemChanged` to be silently suppressed
+  and the UI to appear blank after loading.
+- `_load_project()` calls `QApplication.processEvents()` twice: once after stopping
+  servers (to flush pending events) and once after `_rebuild_tree()` (to ensure the
+  tree is fully rendered before programmatic selection).
+
+### Boolean Register Groups (Coils / Discrete Inputs)
+- `RegisterDelegate.paint()` draws a native checkbox using:
+  ```python
+  opt.features = opt.features | QStyleOptionViewItem.ViewItemFeature.HasCheckIndicator
+  style.drawControl(style.ControlElement.CE_ItemViewItem, opt, painter)
+  ```
+  **Important:** In PySide6, `HasCheckIndicator` is nested under
+  `QStyleOptionViewItem.ViewItemFeature` — NOT directly on `QStyleOptionViewItem`.
+  Using the wrong path silently does nothing (no checkbox drawn).
+- Checkbox toggling is handled in `RegisterTableView.mousePressEvent()`, NOT in
+  `RegisterDelegate.editorEvent()`.  This is necessary because the `CurrentChanged`
+  edit trigger causes Qt to attempt opening an editor before `editorEvent` fires,
+  which interferes with the toggle.
+- `_load_table_model()` must call `self.table.set_bool_group(is_bool)` after installing
+  a new model so the view knows whether to use the checkbox-toggle path.
+
+### Address Conflict Simulation
+- `ConflictingDataBlock` in `server_wrapper.py` XORs register values from two
+  `SlaveDataBlocks` on every read, and randomly drops ~15% of responses.
+- `ModbusServerFactory.build()` detects duplicate slave IDs in a `ServerConfig` and
+  automatically wires `ConflictingDataBlock` for those IDs.
+- Conflicting slaves are shown with ⚠ amber colour in the project tree.
+- The `SlaveDialog` has an "Allow duplicate ID" checkbox with a confirmation dialog.
+- `ServerConfig.conflicting_ids()` returns the set of IDs that appear more than once.
+
+### IP Alias Feature — REMOVED
+The "Add IP Alias" feature (netsh / ncpa.cpl automation) was intentionally removed.
+Users manage IP aliases manually via ncpa.cpl.  The NIC refresh button (↺) in
+`ServerDialog` is retained so users can pick up newly added addresses without
+reopening the dialog.
+
+### Register Table Navigation (Excel-like)
+- Edit triggers: `CurrentChanged | SelectedClicked | AnyKeyPressed`
+- Tab/Shift+Tab: move right/left through editable columns, wrap to next/prev row
+- Enter/Return: move down one row
+- Arrow keys: move in direction, committing current editor first
+- Boolean cells: single left-click toggles via `mousePressEvent` (no editor opened)
+
+## Known Gotchas / Troubleshooting
+
+| Symptom | Cause | Fix |
+|---------|-------|-----|
+| Project loads but UI stays blank | `currentItemChanged` suppressed because Qt auto-selected the same item | `_rebuild_tree()` must call `setCurrentItem(None)` before `blockSignals(False)` |
+| Coils/DI table shows no checkboxes | Wrong PySide6 path for `HasCheckIndicator` | Use `QStyleOptionViewItem.ViewItemFeature.HasCheckIndicator` |
+| Checkbox click does nothing | `editorEvent` consumed by `CurrentChanged` trigger | Toggle in `mousePressEvent`, not `editorEvent` |
+| Build fails with missing module | New module not in `hiddenimports` in `.spec` | Add to `hiddenimports` list in `ModbusServerSimulator.spec` |
+| Server fails to start on port 502 | Port 502 requires admin privileges on Windows | Run as Administrator, or use port > 1024 |
+| `pymodbus` API changes | pymodbus 3.x has breaking changes vs 2.x | Check `server_wrapper.py` — uses `StartAsyncTcpServer` pattern |
+
+## Modbus Address Conflict Simulation — How It Appears to a Scanner
+See `CONFLICT_DETECTION_NOTES.md` for a detailed description of how conflicts
+manifest on the wire, suitable for implementing detection in a separate tool.
